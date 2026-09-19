@@ -70,24 +70,33 @@ function titleOf(sheet: Sheet, phys: number, keyC: number): string {
 
 // ─── блок карточки ───────────────────────────────────────────────────────────
 
-/** Меньше этого по большей стороне — превью, а не фото: растягивать бессмысленно, только размоется */
-const LOW_RES = 400;
+/** Сильнее увеличивать маленькое превью бессмысленно — только размоется */
 const MAX_UPSCALE = 1.6;
 
 function BlockImage({ id, onOpen }: { id: string; onOpen: () => void }) {
   const url = useImageUrl(id, 'full');
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+  const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => setNat(null), [id]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setBox({ w: e.contentRect.width, h: e.contentRect.height }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [url]);
   if (!url) return <div className="blk-img blk-img--loading" aria-hidden />;
-  const small = !!nat && Math.max(nat.w, nat.h) < LOW_RES;
+  // фото вписывается в блок целиком; если для этого его пришлось бы растянуть сильнее MAX_UPSCALE — оставляем меньше и помечаем
+  const small = !!nat && !!box && Math.min(box.w / nat.w, box.h / nat.h) > MAX_UPSCALE;
   return (
-    <button type="button" className="blk-img" onClick={onOpen} aria-label="Открыть фото крупно">
+    <button ref={ref} type="button" className="blk-img" onClick={onOpen} aria-label="Открыть фото крупно">
       <img
         src={url}
         alt=""
         draggable={false}
         onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
-        style={small ? { width: nat.w * MAX_UPSCALE, height: nat.h * MAX_UPSCALE } : undefined}
+        style={small ? { maxWidth: nat.w * MAX_UPSCALE, maxHeight: nat.h * MAX_UPSCALE } : undefined}
       />
       {small && (
         <span className="blk-lowres" title="Фото пришло из Excel маленьким превью. Для карточки загрузите оригинал — например, с телефона">

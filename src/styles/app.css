@@ -2559,7 +2559,10 @@ select.input {
   position: absolute;
   inset: 8px;
   display: grid;
+  /* строка и столбец ровно по блоку — иначе height: 100% у фото не срабатывает и высокое фото вылезает за блок */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
+  overflow: hidden;
   padding: 0;
   border: 0;
   background: transparent;
