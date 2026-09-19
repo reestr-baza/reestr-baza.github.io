@@ -273,6 +273,47 @@ select.input {
   accent-color: var(--ink);
 }
 
+/* ─── вход ──────────────────────────────────────────────────────────────── */
+.login {
+  min-height: 100%;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--chrome);
+}
+.login-card {
+  display: grid;
+  gap: 14px;
+  width: min(100%, 360px);
+  padding: 28px 28px 24px;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-3);
+  box-shadow: var(--sh-pop);
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.login-title {
+  margin: 4px 0 2px;
+  font-size: var(--t-22);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.login-submit {
+  height: 40px;
+  margin-top: 4px;
+  font-size: var(--t-14);
+}
+@media (max-width: 760px) {
+  .login .input {
+    font-size: 16px;
+  }
+}
+
 /* ─── верхняя панель ─────────────────────────────────────────────────────── */
 .topbar {
   display: flex;
@@ -385,6 +426,31 @@ select.input {
 
 .topbar-new {
   height: 34px;
+}
+.topbar-edit {
+  height: 34px;
+}
+.topbar-edit.is-on {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--tape);
+}
+@media (hover: hover) {
+  .topbar-edit.is-on:hover {
+    background: var(--ink-2);
+  }
+}
+
+/* режим просмотра: всё, что меняет данные, приглушено (нажатие объяснит, как включить редактирование) */
+.app.is-view .fill-handle {
+  display: none;
+}
+.app.is-view .toolbar .tb-group:not(.seg):not(.tb-group--free) .tb {
+  opacity: 0.4;
+}
+.app.is-view .param-input,
+.app.is-view .wb-title {
+  cursor: default;
 }
 
 /* ─── панель инструментов ────────────────────────────────────────────────── */
@@ -1063,6 +1129,10 @@ select.input {
   top: 0;
   width: 100%;
   contain: layout style;
+}
+/* объединённая ячейка закрывает ячейки под собой */
+.c--merged {
+  background: var(--sheet);
 }
 /* закреплённые ячейки начинаются после номеров строк и не перекрывают их */
 .g-left .gr {
@@ -2526,6 +2596,8 @@ select.input {
   flex: 1 0 auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* растянутые блоки не оставляют дыр: маленькие занимают свободные клетки */
+  grid-auto-flow: row dense;
   grid-auto-rows: minmax(170px, 1fr);
   min-height: calc(3 * 170px);
   border-top: 1px solid var(--line-strong);
@@ -2644,16 +2716,60 @@ select.input {
 }
 .blk-hint {
   position: absolute;
-  top: 9px;
-  left: 11px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   color: var(--ink-4);
-  font-size: var(--t-11);
-  opacity: 0;
+  font-size: var(--t-12);
   pointer-events: none;
+  transition: color 0.12s ease;
 }
 .blk:hover .blk-hint,
 .blk.is-active .blk-hint {
-  opacity: 1;
+  color: var(--ink-2);
+}
+.blk:focus-within .blk-hint,
+.blk.is-drop .blk-hint {
+  visibility: hidden;
+}
+
+/* размер блока: сетка 3×3, как выбор размера таблицы */
+.pop--span {
+  padding: 10px 10px 8px;
+}
+.span-pick {
+  display: grid;
+  grid-template-columns: repeat(3, 28px);
+  gap: 4px;
+}
+.span-cell {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-heavy);
+  border-radius: 3px;
+  background: var(--sheet);
+}
+.span-cell.is-on {
+  border-color: var(--ink);
+  background: var(--tape);
+}
+.span-label {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--t-13);
+  font-weight: 600;
+  text-align: center;
+}
+.span-label span {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-ui, inherit);
+  font-size: var(--t-11);
+  font-weight: 400;
+  color: var(--ink-3);
 }
 .blk-actions {
   display: flex;
@@ -2911,7 +3027,8 @@ textarea.fld-input {
     grid-auto-rows: auto;
   }
   .blk {
-    aspect-ratio: 1;
+    /* растянутый блок сохраняет пропорции своих клеток */
+    aspect-ratio: var(--cs, 1) / var(--rs, 1);
     min-height: 0;
     padding: 5px;
   }
@@ -2975,11 +3092,13 @@ textarea.fld-input {
     font-size: 16px;
   }
   .topbar-new span,
-  .topbar-file span {
+  .topbar-file span,
+  .topbar-edit span {
     display: none;
   }
   .topbar-new,
-  .topbar-file {
+  .topbar-file,
+  .topbar-edit {
     width: 36px;
     padding: 0;
   }

@@ -1,6 +1,7 @@
 import { Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from '../app/actions';
+import { requireEdit } from '../app/editMode';
 import { gridApi } from '../app/gridApi';
 import { store, useStoreVersion } from '../app/instance';
 import { parseLooseNumber } from '../formula/coerce';
@@ -44,12 +45,14 @@ export function SettingsDialog() {
       const num = parseLooseNumber(n.value);
       out.push({ name, value: num ?? n.value, note: n.note.trim() || undefined });
     }
+    if (!requireEdit()) return;
     store.setNames(out);
     toast('Значения сохранены — формулы пересчитаны');
     close();
   };
 
   const stress = async () => {
+    if (!requireEdit()) return;
     setBusy(true);
     await new Promise((r) => setTimeout(r, 30));
     const t0 = performance.now();

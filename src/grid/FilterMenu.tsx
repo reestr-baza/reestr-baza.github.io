@@ -1,6 +1,6 @@
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { ctx } from '../app/actions';
+import { ctx, notifyUnmerged } from '../app/actions';
 import { gridApi } from '../app/gridApi';
 import { store } from '../app/instance';
 import { compareScalars } from '../formula/coerce';
@@ -116,7 +116,7 @@ function FilterPanel({ vc, rect, onClose }: { vc: number; rect: { left: number; 
   };
 
   const sort = (dir: 'asc' | 'desc') => {
-    store.sortRows(sheet, c, dir);
+    notifyUnmerged(store.sortRows(sheet, c, dir));
     onClose();
     gridApi.focus();
   };

@@ -116,6 +116,31 @@ export async function buildDemo(baseUrl: string): Promise<{ meta: WorkbookMeta; 
       ];
 
     }
+    // ещё два примера заполненных карточек: крупное главное фото и описание во всю ширину
+    if (i === 1 && images.black && images.darkblue) {
+      row.cardLinked = { [cPhoto.id]: { cs: 2, rs: 2 } };
+      row.card = [
+        { text: 'Цвет: графит\nПосадка средняя, прямая штанина от бедра', st: { va: 'top' } },
+        { text: 'В наличии: 26, 27, 28, 29\nПод заказ: 25, 30, 31', st: { va: 'top', b: true } },
+        { img: images.black, text: 'Этот же крой — чёрный', st: { ha: 'center' } },
+        { img: images.darkblue, text: 'и тёмный деним', st: { ha: 'center' } },
+        { text: 'Упаковка: пакет + бирка\nВес: 0,62 кг', st: { va: 'bottom', i: true } },
+      ];
+    }
+    if (i === 2 && images.ecru && images.olive) {
+      row.card = [
+        { img: images.ecru, text: 'экрю', st: { ha: 'center' } },
+        { img: images.olive, text: 'олива', st: { ha: 'center' } },
+        {
+          text: 'Палаццо из плотного денима 14 oz: высокая посадка, широкая штанина от бедра, длина в пол. Одна модель в трёх цветах — песок, экрю, олива.',
+          cs: 3,
+          st: { va: 'middle' },
+        },
+        { text: 'Размеры', st: { va: 'top', b: true, bg: '#fff6c7' } },
+        { text: '25 · 26 · 27 · 28 · 29 · 30', st: { va: 'middle', ha: 'center' } },
+        { text: 'Мин. партия — 20 шт.\nСрок пошива 14 дней', st: { va: 'top', b: true } },
+      ];
+    }
     rows.set(id, row);
     order.push(id);
   }

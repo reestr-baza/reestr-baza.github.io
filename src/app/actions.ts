@@ -1,10 +1,12 @@
 import { colToLetters } from '../formula/a1';
 import { shiftFormula } from '../formula/refs';
 import { editText, parseInput } from '../model/format';
+import { growOverMerges, mergeBounds, viewMerges } from '../model/merges';
 import { isEmptyCell } from '../model/store';
 import type { Cell, CellStyle, ColId, NumFmt, Row, RowId, Sheet } from '../model/types';
 import { importImage, isImageFile } from '../storage/images';
 import { selRect, useUI, type Selection } from '../ui/state';
+import { requireEdit } from './editMode';
 import { gridApi } from './gridApi';
 import { store } from './instance';
 
@@ -33,8 +35,38 @@ export function clampSel(s: Selection): Selection {
   return { ar: cl(s.ar, maxR), ac: cl(s.ac, maxC), fr: cl(s.fr, maxR), fc: cl(s.fc, maxC) };
 }
 
+/**
+ * Выделение с учётом объединённых ячеек (как в Excel): активная ячейка — левая верхняя
+ * в объединении, а диапазон накрывает объединения целиком.
+ */
+export function fitSelToMerges(s: Selection): Selection {
+  const { sheet, view } = ctx();
+  const vm = viewMerges(store, sheet, view);
+  if (!vm.boxes.length) return s;
+  const a = vm.at(s.ar, s.ac);
+  const ar = a ? a.vr0 : s.ar;
+  const ac = a ? a.vc0 : s.ac;
+  const g = growOverMerges(vm, {
+    r1: Math.min(ar, s.fr),
+    r2: Math.max(a ? a.vr1 : ar, s.fr),
+    c1: Math.min(ac, s.fc),
+    c2: Math.max(a ? a.vc1 : ac, s.fc),
+  });
+  const next = { ar, ac, fr: s.fr < ar ? g.r1 : g.r2, fc: s.fc < ac ? g.c1 : g.c2 };
+  return next.ar === s.ar && next.ac === s.ac && next.fr === s.fr && next.fc === s.fc ? s : next;
+}
+
+/** Выделена одна ячейка — обычная или объединённая целиком. */
+export function isSingleCell(s: Selection): boolean {
+  if (s.ar === s.fr && s.ac === s.fc) return true;
+  const { sheet, view } = ctx();
+  const b = viewMerges(store, sheet, view).at(s.ar, s.ac);
+  const { r1, r2, c1, c2 } = selRect(s);
+  return !!b && b.vr0 === r1 && b.vr1 === r2 && b.vc0 === c1 && b.vc1 === c2;
+}
+
 export function setSelection(s: Selection, scroll = true) {
-  const next = clampSel(s);
+  const next = fitSelToMerges(clampSel(s));
   useUI.getState().setSel(next);
   if (!scroll) return;
   // выделен столбец/строка целиком — держим в поле зрения активную ячейку, а не дальний угол
@@ -86,8 +118,16 @@ export function toast(text: string, extra?: { tone?: 'error' | 'plain'; action?:
 
 export function moveSel(dr: number, dc: number, extend = false) {
   const s = useUI.getState().sel;
-  if (extend) setSelection({ ...s, fr: s.fr + dr, fc: s.fc + dc });
-  else setSelection({ ar: s.ar + dr, ac: s.ac + dc, fr: s.ar + dr, fc: s.ac + dc });
+  if (extend) {
+    setSelection({ ...s, fr: s.fr + dr, fc: s.fc + dc });
+    return;
+  }
+  // из объединённой ячейки выходим через её дальний край
+  const { sheet, view } = ctx();
+  const box = viewMerges(store, sheet, view).at(s.ar, s.ac);
+  const r = (box && dr ? (dr > 0 ? box.vr1 : box.vr0) : s.ar) + dr;
+  const c = (box && dc ? (dc > 0 ? box.vc1 : box.vc0) : s.ac) + dc;
+  setSelection({ ar: r, ac: c, fr: r, fc: c });
 }
 
 function isBlankAt(vr: number, vc: number): boolean {
@@ -144,6 +184,7 @@ export function editableText(vr: number, vc: number): string {
 }
 
 export function startEdit(mode: 'enter' | 'edit', initial?: string, source: 'cell' | 'bar' = 'cell') {
+  if (!requireEdit()) return;
   const { sel } = useUI.getState();
   const x = cellAt(sel.ar, sel.ac);
   if (!x) return;
@@ -158,6 +199,7 @@ export function cancelEdit() {
 
 /** Записать введённый текст в ячейку. Возвращает false, если в формуле ошибка. */
 export function writeInput(vr: number, vc: number, text: string, label = 'Ввод'): boolean {
+  if (!requireEdit()) return false;
   const x = cellAt(vr, vc);
   if (!x) return true;
   const { sheet } = ctx();
@@ -209,6 +251,7 @@ function offerColumnFormula(vr: number, vc: number, f: string) {
 }
 
 export function applyColumnFormula(colId: ColId, anchored: string | undefined) {
+  if (!requireEdit()) return;
   const { sheet } = ctx();
   const c = store.colIndexOf(sheet, colId);
   if (c < 0) return;
@@ -237,7 +280,7 @@ export function commitEdit(move: 'down' | 'up' | 'right' | 'left' | null = 'down
   useUI.getState().set({ edit: null });
   const s = useUI.getState().sel;
   const { r1, r2, c1, c2 } = selRect(s);
-  const multi = r1 !== r2 || c1 !== c2;
+  const multi = !isSingleCell(s);
   if (move) {
     const dr = move === 'down' ? 1 : move === 'up' ? -1 : 0;
     const dc = move === 'right' ? 1 : move === 'left' ? -1 : 0;
@@ -363,6 +406,7 @@ export function appendRow(): number {
 }
 
 export function deleteSelectedRows() {
+  if (!requireEdit()) return;
   const { sheet, view } = ctx();
   const ids = selectedRowIds();
   if (!ids.length) return;
@@ -395,6 +439,7 @@ export function insertColumns(where: 'left' | 'right') {
 }
 
 export function deleteSelectedColumns() {
+  if (!requireEdit()) return;
   const { sheet } = ctx();
   const ids = selectedColIds();
   if (ids.length >= sheet.columns.length) {
@@ -443,13 +488,100 @@ export function unhideColumnsAround() {
 
 export function sortByColumn(vc: number, dir: 'asc' | 'desc') {
   const { sheet, view } = ctx();
-  store.sortRows(sheet, view.cols[vc], dir);
+  notifyUnmerged(store.sortRows(sheet, view.cols[vc], dir));
+}
+
+/** После сортировки: объединения по вертикали пришлось снять — скажем об этом. */
+export function notifyUnmerged(n: number) {
+  if (n) toast(n > 1 ? `Для сортировки сняты объединения ячеек по вертикали: ${n}` : 'Для сортировки снято объединение ячеек по вертикали', { action: { label: 'Отменить', run: () => store.undo() } });
+}
+
+// ─── объединение ячеек ───────────────────────────────────────────────────────
+
+const hasContent = (c: Cell | undefined) => !!c && ((c.v !== undefined && c.v !== '') || !!c.f || !!c.img || !!c.href || !!c.note);
+
+/** Объединения, которые задевает выделение. */
+function mergesInSelection() {
+  const { sheet, view } = ctx();
+  const { r1, r2, c1, c2 } = selRect(useUI.getState().sel);
+  return viewMerges(store, sheet, view).boxes.filter((b) => !(b.vr1 < r1 || b.vr0 > r2 || b.vc1 < c1 || b.vc0 > c2));
+}
+
+export function selectionHasMerges(): boolean {
+  return mergesInSelection().length > 0;
+}
+
+/**
+ * Объединить выделенные ячейки. Как в Excel: остаётся значение левой верхней ячейки
+ * (если она пустая — первое непустое), текст выравнивается по центру.
+ */
+export function mergeSelection() {
+  if (!requireEdit()) return;
+  const { sheet, view } = ctx();
+  const { r1, r2, c1, c2 } = selRect(useUI.getState().sel);
+  if (r1 === r2 && c1 === c2) {
+    toast('Выделите несколько ячеек — их можно объединить в одну');
+    return;
+  }
+  const frozen = Math.min(sheet.frozen, view.cols.length);
+  if (c1 < frozen && c2 >= frozen) {
+    toast('Закреплённый столбец нельзя объединить с обычным: сначала измените закрепление', { tone: 'error' });
+    return;
+  }
+  const r0 = view.rows[r1];
+  const rN = view.rows[r2];
+  const c0 = sheet.columns[view.cols[c1]].id;
+  const cN = sheet.columns[view.cols[c2]].id;
+  const p0 = view.rowIndex.get(r0)!;
+  const p1 = view.rowIndex.get(rN)!;
+  const q0 = view.cols[c1];
+  const q1 = view.cols[c2];
+  let lost = 0;
+  store.transact('Объединение ячеек', () => {
+    const anchor = sheet.rows.get(r0)?.cells[c0];
+    let keep = hasContent(anchor) ? anchor : undefined;
+    for (let p = p0; p <= p1; p++) {
+      const rid = sheet.rowOrder[p];
+      for (let q = q0; q <= q1; q++) {
+        const cid = sheet.columns[q].id;
+        if (rid === r0 && cid === c0) continue;
+        const cell = sheet.rows.get(rid)?.cells[cid];
+        if (!cell) continue;
+        if (hasContent(cell)) {
+          if (!keep) keep = cell;
+          else lost++;
+        }
+        store.setCell(sheet, rid, cid, undefined);
+      }
+    }
+    const base = keep ?? anchor ?? {};
+    store.setCell(sheet, r0, c0, { ...base, st: { ...base.st, ha: base.st?.ha ?? 'center' } });
+    // объединения внутри нового поглощаются им
+    const rest = (sheet.merges ?? []).filter((m) => {
+      const b = mergeBounds(store, sheet, m);
+      return b && (b.p1 < p0 || b.p0 > p1 || b.q1 < q0 || b.q0 > q1);
+    });
+    store.setMerges(sheet, [...rest, { r0, r1: rN, c0, c1: cN }]);
+  });
+  setSelection({ ar: r1, ac: c1, fr: r2, fc: c2 }, false);
+  if (lost) toast(`Ячейки объединены. Осталось значение левой верхней ячейки, других значений убрано: ${lost}`, { action: { label: 'Отменить', run: undo } });
+}
+
+export function unmergeSelection() {
+  if (!requireEdit()) return;
+  const { sheet } = ctx();
+  const hit = new Set(mergesInSelection().map((b) => b.merge));
+  if (!hit.size) return;
+  store.transact('Разъединение ячеек', () => store.setMerges(sheet, (sheet.merges ?? []).filter((m) => !hit.has(m))));
+  const s = useUI.getState().sel;
+  useUI.getState().setSel({ ...s });
 }
 
 // ─── фото ────────────────────────────────────────────────────────────────────
 
 /** Вставить фото в ячейки начиная с (vr, vc) вниз по столбцу. */
 export async function insertImages(files: File[] | Blob[], vr: number, vc: number) {
+  if (!requireEdit()) return;
   const imgs = files.filter((f) => isImageFile(f as File));
   if (!imgs.length) {
     toast('Это не изображение. Подойдут JPG, PNG, WebP, GIF', { tone: 'error' });
@@ -616,6 +748,7 @@ export function openCard(vr: number) {
 
 /** Новая карточка = новая строка в конце листа со следующим свободным артикулом. */
 export function newCard() {
+  if (!requireEdit()) return;
   const { sheet } = ctx();
   const keyC = sheet.keyColId ? store.colIndexOf(sheet, sheet.keyColId) : -1;
   let nextSku: number | null = null;

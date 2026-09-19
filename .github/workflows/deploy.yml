@@ -29,6 +29,8 @@ jobs:
         env:
           # сайт организации (<имя>.github.io) живёт в корне, остальные — в /<репозиторий>/
           BASE_PATH: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
+          # демо на GitHub Pages работает без сервера: всё хранится в браузере
+          VITE_STORAGE: local
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

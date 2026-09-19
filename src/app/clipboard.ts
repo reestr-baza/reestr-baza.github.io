@@ -3,6 +3,7 @@ import { parseInput } from '../model/format';
 import type { Cell } from '../model/types';
 import { selRect, useUI } from '../ui/state';
 import { cellAt, ctx, insertImages, setSelection, shiftedCell, toast } from './actions';
+import { requireEdit } from './editMode';
 import { store } from './instance';
 
 interface ClipCell {
@@ -41,6 +42,11 @@ function plainText(vr: number, vc: number): string {
 }
 
 export function handleCopy(e: ClipboardEvent, cut: boolean) {
+  // вырезать в режиме просмотра нельзя: это изменение
+  if (cut && !requireEdit()) {
+    e.preventDefault();
+    return;
+  }
   const { sheet } = ctx();
   const sel = useUI.getState().sel;
   const { r1, r2, c1, c2 } = selRect(sel);
@@ -180,6 +186,10 @@ function ensureSize(vr: number, vc: number, rows: number, cols: number): boolean
 export function handlePaste(e: ClipboardEvent) {
   const data = e.clipboardData;
   if (!data) return;
+  if (!requireEdit()) {
+    e.preventDefault();
+    return;
+  }
   const sel = useUI.getState().sel;
   const { r1, r2, c1, c2 } = selRect(sel);
 

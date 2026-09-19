@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { appendRow, cellAt, commitEdit, ctx, fillTo, insertImages, openCard, setSelection, startEdit } from '../app/actions';
+import { appendRow, cellAt, commitEdit, ctx, fillTo, fitSelToMerges, insertImages, openCard, setSelection, startEdit } from '../app/actions';
 import { handleCopy, handlePaste } from '../app/clipboard';
 import { gridApi } from '../app/gridApi';
 import { store, useStoreVersion } from '../app/instance';
@@ -10,7 +10,7 @@ import { selRect, useUI } from '../ui/state';
 import { CellEditor } from './Editor';
 import { buildGeometry, HD_H, indexAt, RH_W, type Geometry } from './geometry';
 import { handleGridKey, isFormulaPointMode } from './keyboard';
-import { GridRow } from './Row';
+import { GridRow, MergeLayer } from './Row';
 
 const ADD_ROW_H = 40;
 const ADD_COL_W = 44;
@@ -233,7 +233,10 @@ export function Grid() {
       const h = hit(clientX, clientY, true);
       if (h.z !== 'cell') return;
       if (d.kind === 'cells') {
-        if (h.vr !== s.fr || h.vc !== s.fc) useUI.getState().setSel({ ...s, fr: h.vr, fc: h.vc });
+        if (h.vr !== s.fr || h.vc !== s.fc) {
+          const next = fitSelToMerges({ ...s, fr: h.vr, fc: h.vc });
+          if (next.fr !== s.fr || next.fc !== s.fc || next.ar !== s.ar || next.ac !== s.ac) useUI.getState().setSel(next);
+        }
       } else updatePointRef(d, h.vr, h.vc);
     } else if (d.kind === 'cols') {
       const h = hit(clientX, Math.max(clientY, 0), true);
@@ -290,7 +293,7 @@ export function Grid() {
         const s = selRect(useUI.getState().sel);
         const all = selectionIsWholeCols() && d.c >= s.c1 && d.c <= s.c2;
         const ids = all ? geoRef.current.cols.slice(s.c1, s.c2 + 1).map((c) => sheet.columns[c].id) : [col.id];
-        store.transact('Ширина столбца', () => ids.forEach((id) => store.updateColumn(sheet, id, { w: d.w })));
+        store.allow(() => store.transact('Ширина столбца', () => ids.forEach((id) => store.updateColumn(sheet, id, { w: d.w }))));
       }
     }
     if (d.kind === 'rowResize') {
@@ -298,7 +301,7 @@ export function Grid() {
       const s = selRect(useUI.getState().sel);
       const all = selectionIsWholeRows() && d.vr >= s.r1 && d.vr <= s.r2;
       const ids = all ? geoRef.current.view.rows.slice(s.r1, s.r2 + 1) : [rowId];
-      store.setRowsHeight(sheet, ids, d.h);
+      store.allow(() => store.setRowsHeight(sheet, ids, d.h));
     }
     if (d.kind === 'point') pointInput.current?.focus();
     setDrag(null);
@@ -459,7 +462,7 @@ export function Grid() {
     const rr = target.closest<HTMLElement>('[data-resize-row]');
     if (rr) {
       const rowId = geo.view.rows[Number(rr.dataset.resizeRow)];
-      store.setRowsHeight(sheet, [rowId], undefined);
+      store.allow(() => store.setRowsHeight(sheet, [rowId], undefined));
       return;
     }
     const zone = hit(e.clientX, e.clientY);
@@ -726,7 +729,9 @@ export function Grid() {
         openR: cc2 > pEnd,
       };
     };
-    const multi = sr1 !== sr2 || sc1 !== sc2;
+    const box = geo.merges.at(sel.ar, sel.ac);
+    const onlyBox = !!box && box.vr0 === sr1 && box.vr1 === sr2 && box.vc0 === sc1 && box.vc1 === sc2;
+    const multi = (sr1 !== sr2 || sc1 !== sc2) && !onlyBox;
     const rg = rect(sr1, Math.min(sr2, n - 1), sc1, sc2);
     if (rg && multi)
       out.push(
@@ -736,9 +741,9 @@ export function Grid() {
           style={{ left: rg.left - 1, top: rg.top - 1, width: rg.width + 1, height: rg.height + 1 }}
         />,
       );
-    if (sel.ac >= pStart && sel.ac <= pEnd && sel.ar < n && !edit) {
-      const a = rect(sel.ar, sel.ar, sel.ac, sel.ac)!;
-      out.push(<div key="active" className="sel-active" style={{ left: a.left - 1, top: a.top - 1, width: a.width + 1, height: a.height + 1 }} />);
+    if (sel.ar < n && !edit) {
+      const a = box ? rect(box.vr0, box.vr1, box.vc0, box.vc1) : sel.ac >= pStart && sel.ac <= pEnd ? rect(sel.ar, sel.ar, sel.ac, sel.ac) : null;
+      if (a) out.push(<div key="active" className="sel-active" style={{ left: a.left - 1, top: a.top - 1, width: a.width + 1, height: a.height + 1 }} />);
     }
     if (rg && sc2 >= pStart && sc2 <= pEnd && !edit) {
       out.push(
@@ -876,7 +881,7 @@ export function Grid() {
       const d = store.display(sheet, i, c);
       if (d.text) w = Math.max(w, cx.measureText(d.text).width * (d.style.b ? 1.06 : 1) + 22);
     }
-    store.updateColumn(sheet, col.id, { w: Math.round(Math.max(48, Math.min(560, w))) }, 'Ширина по содержимому');
+    store.allow(() => store.updateColumn(sheet, col.id, { w: Math.round(Math.max(48, Math.min(560, w))) }, 'Ширина по содержимому'));
   }
 
   return (
@@ -944,6 +949,7 @@ export function Grid() {
           <div className="g-left" style={{ width: leftW }}>
             <div className="g-rh">{rowHeads}</div>
             {leftRows}
+            {geo.frozen > 0 && n > 0 && <MergeLayer geo={geo} sheet={sheet} pane="left" r0={r0} r1={r1} c0={0} c1={geo.frozen - 1} keyCol={keyCol} />}
             {paneLayers('left')}
             {geo.hiddenAfterRows && (
               <button
@@ -959,6 +965,7 @@ export function Grid() {
           </div>
           <div className="g-main" style={{ width: mainW }}>
             {rows}
+            {n > 0 && c1 >= c0 && <MergeLayer geo={geo} sheet={sheet} pane="main" r0={r0} r1={r1} c0={c0} c1={c1} keyCol={keyCol} />}
             {paneLayers('main')}
           </div>
         </div>

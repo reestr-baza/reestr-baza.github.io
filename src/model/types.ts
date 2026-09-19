@@ -43,8 +43,16 @@ export interface Cell {
   st?: CellStyle;
 }
 
+/** Размер блока карточки в клетках сетки 3×N */
+export interface BlockSpan {
+  /** Ширина, 1–3 клетки */
+  cs?: number;
+  /** Высота, 1–3 клетки */
+  rs?: number;
+}
+
 /** Блок карточки товара: фото + текст с выравниванием, как ячейка. */
-export interface CardBlock {
+export interface CardBlock extends BlockSpan {
   img?: ImageId;
   text?: string;
   st?: CellStyle;
@@ -57,6 +65,8 @@ export interface Row {
   h?: number;
   hidden?: boolean;
   card?: CardBlock[];
+  /** Размер блоков с фото из таблицы (по столбцу) */
+  cardLinked?: Record<ColId, BlockSpan>;
 }
 
 export interface Column {
@@ -97,6 +107,18 @@ export interface FilterSpec {
 
 export type Density = 'S' | 'M' | 'L';
 
+/**
+ * Объединённые ячейки: прямоугольник между угловыми строками и столбцами.
+ * Углы хранятся по id, поэтому строка или столбец, вставленные внутрь, попадают в объединение — как в Excel.
+ * Значение и оформление берутся из левой верхней ячейки.
+ */
+export interface Merge {
+  r0: RowId;
+  r1: RowId;
+  c0: ColId;
+  c1: ColId;
+}
+
 export interface SheetMeta {
   id: SheetId;
   name: string;
@@ -108,6 +130,7 @@ export interface SheetMeta {
   frozen: number;
   density: Density;
   filters: Record<ColId, FilterSpec>;
+  merges?: Merge[];
 }
 
 export interface Sheet extends SheetMeta {

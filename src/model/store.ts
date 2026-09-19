@@ -14,6 +14,7 @@ import {
   type ColId,
   type Column,
   type FilterSpec,
+  type Merge,
   type NamedValue,
   type Row,
   type RowId,
@@ -36,6 +37,8 @@ type Patch =
 
 interface Tx {
   label: string;
+  /** Сделано в режиме просмотра (фильтр, сортировка) — и отменять его можно там же */
+  view?: boolean;
   patches: Patch[];
   rowPatch: Map<string, Extract<Patch, { k: 'row' }>>;
   /** Выделение до изменения — чтобы отмена возвращала курсор на место. */
@@ -135,6 +138,12 @@ export class Store implements EvalHost {
   /** Сохраняет/восстанавливает выделение UI при отмене. Назначается интерфейсом. */
   selectionProvider: { get(): unknown; set(v: unknown): void } | null = null;
 
+  /** Режим просмотра: изменения данных отклоняются (кроме фильтров и сортировки). */
+  readOnly = false;
+  /** Вызывается, когда изменение отклонено режимом просмотра. */
+  onBlocked: (() => void) | null = null;
+  private allowDepth = 0;
+
   constructor(meta: WorkbookMeta, sheets: Sheet[]) {
     this.meta = meta;
     for (const s of sheets) this.sheets.set(s.id, s);
@@ -203,9 +212,27 @@ export class Store implements EvalHost {
 
   // ─── транзакции ────────────────────────────────────────────────────────────
 
+  /** Выполнить действие, разрешённое и в режиме просмотра (фильтр, сортировка). */
+  allow<T>(fn: () => T): T {
+    this.allowDepth++;
+    try {
+      return fn();
+    } finally {
+      this.allowDepth--;
+    }
+  }
+
+  /** Отклонено ли изменение режимом просмотра — страховка для всех путей изменения данных. */
+  private blocked(): boolean {
+    if (!this.readOnly || this.allowDepth > 0) return false;
+    this.onBlocked?.();
+    return true;
+  }
+
   transact<T>(label: string, fn: () => T): T {
+    if (this.txDepth === 0 && this.blocked()) return undefined as T;
     if (this.txDepth === 0) {
-      this.tx = { label, patches: [], rowPatch: new Map(), selection: this.selectionProvider?.get() };
+      this.tx = { label, patches: [], rowPatch: new Map(), selection: this.selectionProvider?.get(), view: this.allowDepth > 0 };
     }
     this.txDepth++;
     try {
@@ -240,6 +267,8 @@ export class Store implements EvalHost {
   }
 
   undo() {
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (!top || (!top.view && this.blocked())) return;
     const tx = this.undoStack.pop();
     if (!tx) return;
     const redoSel = this.selectionProvider?.get();
@@ -250,6 +279,8 @@ export class Store implements EvalHost {
   }
 
   redo() {
+    const top = this.redoStack[this.redoStack.length - 1];
+    if (!top || (!top.view && this.blocked())) return;
     const tx = this.redoStack.pop();
     if (!tx) return;
     const sel = this.selectionProvider?.get();
@@ -706,7 +737,7 @@ export class Store implements EvalHost {
     const filters = { ...sheet.filters };
     if (spec && (spec.values || spec.cond || spec.color || spec.photo)) filters[colId] = spec;
     else delete filters[colId];
-    this.transact(spec ? 'Фильтр' : 'Сброс фильтра', () => this.setSheetMeta(sheet, { filters }));
+    this.allow(() => this.transact(spec ? 'Фильтр' : 'Сброс фильтра', () => this.setSheetMeta(sheet, { filters })));
     this.filterEpoch++;
     this.pinned.delete(sheet.id);
     this.views.clear();
@@ -715,7 +746,7 @@ export class Store implements EvalHost {
 
   clearFilters(sheet: Sheet) {
     if (!Object.keys(sheet.filters).length) return;
-    this.transact('Сброс фильтров', () => this.setSheetMeta(sheet, { filters: {} }));
+    this.allow(() => this.transact('Сброс фильтров', () => this.setSheetMeta(sheet, { filters: {} })));
     this.filterEpoch++;
     this.pinned.delete(sheet.id);
     this.views.clear();
@@ -801,6 +832,7 @@ export class Store implements EvalHost {
         else runs.push([p, 1]);
       }
       for (let k = runs.length - 1; k >= 0; k--) this.adjustAll(sheet, { axis: 'row', at: runs[k][0], count: -runs[k][1] });
+      this.shrinkMerges(sheet, 'row', doomed);
       for (const id of rowIds) this.dropRow(sheet, id);
       this.setOrder(
         sheet,
@@ -832,10 +864,15 @@ export class Store implements EvalHost {
     });
   }
 
-  /** Сортировка всех строк листа по столбцу (как «Сортировка» в автофильтре Excel). */
-  sortRows(sheet: Sheet, c: number, dir: 'asc' | 'desc', by: { kind: 'value' } | { kind: 'bg' | 'fg'; color: string | null } = { kind: 'value' }) {
+  /**
+   * Сортировка всех строк листа по столбцу (как «Сортировка» в автофильтре Excel).
+   * Объединения по вертикали при сортировке снимаются (Excel в таком случае сортировать отказывается).
+   * Возвращает, сколько объединений снято.
+   */
+  sortRows(sheet: Sheet, c: number, dir: 'asc' | 'desc', by: { kind: 'value' } | { kind: 'bg' | 'fg'; color: string | null } = { kind: 'value' }): number {
     const col = sheet.columns[c];
-    if (!col) return;
+    if (!col) return 0;
+    const vertical = (sheet.merges ?? []).filter((m) => m.r0 !== m.r1);
     const n = sheet.rowOrder.length;
     const keys: { i: number; v: Scalar; empty: boolean; colorHit: boolean }[] = [];
     for (let i = 0; i < n; i++) {
@@ -861,7 +898,7 @@ export class Store implements EvalHost {
       return d !== 0 ? d : a.i - b.i;
     });
     const order = keys.map((k) => sheet.rowOrder[k.i]);
-    this.transact('Сортировка', () => {
+    this.allow(() => this.transact('Сортировка', () => {
       // формулы в переехавших строках сдвигаются вместе со строкой (как в Excel)
       keys.forEach((k, newPos) => {
         const delta = newPos - k.i;
@@ -878,7 +915,53 @@ export class Store implements EvalHost {
         if (cells) this.putRow(sheet, { ...row, cells });
       });
       this.setOrder(sheet, order);
-    });
+      if (vertical.length) this.setMerges(sheet, (sheet.merges ?? []).filter((m) => m.r0 === m.r1));
+    }));
+    return vertical.length;
+  }
+
+  // ─── объединённые ячейки ───────────────────────────────────────────────────
+
+  setMerges(sheet: Sheet, merges: Merge[]) {
+    this.setSheetMeta(sheet, { merges: merges.length ? merges : undefined });
+  }
+
+  /** Перед удалением строк/столбцов: угол объединения, попавший под удаление, переезжает на ближайшую уцелевшую линию внутри. */
+  private shrinkMerges(sheet: Sheet, axis: 'row' | 'col', doomed: Set<string>) {
+    if (!sheet.merges?.length) return;
+    const line = axis === 'row' ? sheet.rowOrder : sheet.columns.map((c) => c.id);
+    const pos = new Map(line.map((id, i) => [id, i]));
+    let changed = false;
+    const next: Merge[] = [];
+    for (const m of sheet.merges) {
+      const [ka, kb] = axis === 'row' ? (['r0', 'r1'] as const) : (['c0', 'c1'] as const);
+      const a = pos.get(m[ka]);
+      const b = pos.get(m[kb]);
+      if (a === undefined || b === undefined) {
+        changed = true;
+        continue;
+      }
+      if (!doomed.has(m[ka]) && !doomed.has(m[kb])) {
+        next.push(m);
+        continue;
+      }
+      changed = true;
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      let first = -1;
+      let last = -1;
+      for (let i = lo; i <= hi; i++) {
+        if (doomed.has(line[i])) continue;
+        if (first < 0) first = i;
+        last = i;
+      }
+      if (first < 0) continue;
+      const moved = { ...m, [ka]: line[first], [kb]: line[last] };
+      // от объединения осталась одна ячейка — оно больше не нужно
+      if (moved.r0 === moved.r1 && moved.c0 === moved.c1) continue;
+      next.push(moved);
+    }
+    if (changed) this.setMerges(sheet, next);
   }
 
   // ─── операции со столбцами ─────────────────────────────────────────────────
@@ -915,6 +998,7 @@ export class Store implements EvalHost {
     this.transact(colIds.length > 1 ? 'Удаление столбцов' : 'Удаление столбца', () => {
       const positions = sheet.columns.map((c, i) => (doomed.has(c.id) ? i : -1)).filter((i) => i >= 0);
       for (let k = positions.length - 1; k >= 0; k--) this.adjustAll(sheet, { axis: 'col', at: positions[k], count: -1 });
+      this.shrinkMerges(sheet, 'col', doomed);
       for (const id of sheet.rowOrder) {
         const row = sheet.rows.get(id);
         if (!row) continue;

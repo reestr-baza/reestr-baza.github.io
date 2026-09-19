@@ -1,12 +1,12 @@
 import ExcelJS from 'exceljs';
-import { colToLetters } from '../formula/a1';
+import { colToLetters, lettersToCol } from '../formula/a1';
 import { parseLooseNumber } from '../formula/coerce';
 import { toRuFormula } from '../formula/excel';
 import { dateToSerial } from '../formula/functions';
 import { adjustFormula, listRefs, mapRefs, shiftFormula } from '../formula/refs';
 import { uid } from '../lib/ids';
 import { parseInput } from '../model/format';
-import { DEFAULT_COL_WIDTH, type Cell, type CellStyle, type Column, type NamedValue, type Row, type RowId, type Sheet } from '../model/types';
+import { DEFAULT_COL_WIDTH, type Cell, type CellStyle, type Column, type Merge, type NamedValue, type Row, type RowId, type Sheet } from '../model/types';
 import { imageSize, importImage } from './images';
 import { argbToHex, numFmtFromExcel } from './xlsx';
 
@@ -366,6 +366,21 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
 
     const views = ws.views?.[0] as { state?: string; xSplit?: number } | undefined;
     const frozen = views?.state === 'frozen' && views.xSplit ? Math.min(views.xSplit, columns.length - 1) : 1;
+
+    // объединённые ячейки в строках данных; объединения шапки уже стали названиями столбцов
+    const merges: Merge[] = [];
+    for (const ref of (ws.model as { merges?: string[] }).merges ?? []) {
+      const mm = /^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$/i.exec(ref);
+      if (!mm) continue;
+      const ra = Number(mm[2]) - hr - 1;
+      const rb = Number(mm[4]) - hr - 1;
+      const ca = lettersToCol(mm[1].toUpperCase());
+      const cb = lettersToCol(mm[3].toUpperCase());
+      if (ra < 0 || rb >= order.length || cb >= columns.length) continue;
+      // закреплённый столбец с обычным не объединяем
+      if (ca < frozen && cb >= frozen) continue;
+      merges.push({ r0: order[ra], r1: order[rb], c0: columns[ca].id, c1: columns[cb].id });
+    }
     rowsTotal += order.length;
     sheets.push({
       id: uid(8),
@@ -377,6 +392,7 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
       frozen,
       density: images.length ? 'M' : 'S',
       filters: {},
+      merges: merges.length ? merges : undefined,
     });
   }
   if (!sheets.length) throw new Error('В файле нет данных');

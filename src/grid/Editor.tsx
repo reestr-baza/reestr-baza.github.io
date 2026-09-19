@@ -111,10 +111,11 @@ export function CellEditor({ geo, xShift }: { geo: Geometry; xShift: number; pan
     }
   }, [edit.caret, edit.text]);
 
+  const box = geo.merges.at(edit.r, edit.c);
   const x = geo.colX[edit.c] - xShift;
   const y = geo.rowY[edit.r];
-  const cellW = geo.colX[edit.c + 1] - geo.colX[edit.c];
-  const cellH = geo.rowY[edit.r + 1] - geo.rowY[edit.r];
+  const cellW = box ? geo.colX[box.vc1 + 1] - geo.colX[edit.c] : geo.colX[edit.c + 1] - geo.colX[edit.c];
+  const cellH = box ? geo.rowY[box.vr1 + 1] - geo.rowY[edit.r] : geo.rowY[edit.r + 1] - geo.rowY[edit.r];
   const lines = edit.text.split('\n');
   const widest = Math.max(...lines.map(textWidth));
   const w = Math.max(cellW + 1, Math.min(520, widest + 28));

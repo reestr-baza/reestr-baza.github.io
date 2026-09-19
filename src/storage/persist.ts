@@ -1,7 +1,11 @@
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from 'fflate';
 import type { CommitInfo, Store } from '../model/store';
 import type { Row, RowId, Sheet, SheetMeta, WorkbookMeta } from '../model/types';
+import { clientId, mode, remote } from './backend';
 import { db, type Snapshot, type StoredRow } from './db';
+
+/** Версия базы на сервере, которую мы видели последней — чтобы заметить правки с другого устройства. */
+let lastRev = 0;
 
 export type SaveState = { status: 'saved' | 'saving' | 'error'; at: number; error?: string };
 
@@ -48,10 +52,25 @@ export function sheetMetaOf(s: Sheet): SheetMeta {
     frozen: s.frozen,
     density: s.density,
     filters: s.filters,
+    merges: s.merges,
   };
 }
 
 export async function loadWorkbook(): Promise<{ meta: WorkbookMeta; sheets: Sheet[] } | null> {
+  if (mode === 'server') {
+    const data = await remote.load();
+    if (!data || !data.sheets.length) return null;
+    lastRev = data.rev;
+    const sheets = sheetsFromDump({ format: 'reestr', version: 1, meta: data.meta, sheets: data.sheets });
+    for (const s of sheets) {
+      // строки, потерянные порядком (или наоборот), не должны ломать лист
+      const inOrder = new Set(s.rowOrder);
+      s.rowOrder = s.rowOrder.filter((rid) => s.rows.has(rid));
+      for (const rid of s.rows.keys()) if (!inOrder.has(rid)) s.rowOrder.push(rid);
+    }
+    const ids = sheets.map((s) => s.id);
+    return { meta: { ...data.meta, sheetIds: ids, activeSheet: ids.includes(data.meta.activeSheet) ? data.meta.activeSheet : ids[0] }, sheets };
+  }
   const d = await db();
   const meta = await d.get('meta', 'wb');
   if (!meta) return null;
@@ -80,6 +99,13 @@ export async function loadWorkbook(): Promise<{ meta: WorkbookMeta; sheets: Shee
 
 /** Полная запись книги (первый запуск, восстановление, импорт). */
 export async function writeWholeWorkbook(meta: WorkbookMeta, sheets: Sheet[]) {
+  if (mode === 'server') {
+    lastRev = await remote.replace(
+      meta,
+      sheets.map((s) => ({ ...sheetMetaOf(s), rows: s.rowOrder.map((id) => s.rows.get(id)!).filter(Boolean) })),
+    );
+    return;
+  }
   const d = await db();
   const tx = d.transaction(['meta', 'sheets', 'rows'], 'readwrite');
   await tx.objectStore('rows').clear();
@@ -113,6 +139,12 @@ export class Persister {
     store.onCommit((c) => this.onCommit(c));
     if ('BroadcastChannel' in window) this.channel = new BroadcastChannel('reestr');
     window.addEventListener('pagehide', () => void this.flush());
+    window.addEventListener('beforeunload', (e) => {
+      if (mode === 'server' && (this.state.status !== 'saved' || this.dirtyRows.size)) {
+        void this.flush();
+        e.preventDefault();
+      }
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') void this.flush();
     });
@@ -124,6 +156,25 @@ export class Persister {
   }
 
   onRemoteChange(fn: () => void) {
+    if (mode === 'server') {
+      // с сервером следим за версией базы: раз в 20 секунд и при возврате на вкладку
+      const check = async () => {
+        if (this.dirtyRows.size || this.flushing) return;
+        try {
+          const r = await remote.rev();
+          if (r.rev > lastRev && r.by !== clientId) fn();
+        } catch {
+          /* нет связи — проверим позже */
+        }
+      };
+      const timer = window.setInterval(check, 20000);
+      const onFocus = () => void check();
+      window.addEventListener('focus', onFocus);
+      return () => {
+        window.clearInterval(timer);
+        window.removeEventListener('focus', onFocus);
+      };
+    }
     if (!this.channel) return () => {};
     const h = (e: MessageEvent) => {
       if (e.data?.type === 'changed' && e.data.from !== this.tabId) fn();
@@ -173,6 +224,17 @@ export class Persister {
 
     this.flushing = (async () => {
       try {
+        if (mode === 'server') {
+          lastRev = await remote.save({
+            meta: meta ? this.store.meta : undefined,
+            sheets: sheets.map((id) => this.store.sheets.get(id)).filter((x): x is Sheet => !!x).map(sheetMetaOf),
+            removedSheets: removed,
+            rows: rows.map(({ sheetId, rowId }) => ({ sheetId, rowId, row: this.store.sheets.get(sheetId)?.rows.get(rowId) ?? null })),
+          });
+          this.setState({ status: 'saved', at: Date.now() });
+          this.channel?.postMessage({ type: 'changed', from: this.tabId });
+          return;
+        }
         const d = await db();
         const tx = d.transaction(['meta', 'sheets', 'rows'], 'readwrite');
         const rowStore = tx.objectStore('rows');
@@ -225,6 +287,7 @@ export function decodeDump(data: Uint8Array): WorkbookDump {
 export async function takeSnapshot(store: Store, label: string): Promise<void> {
   const dump = dumpWorkbook(store);
   const rows = dump.sheets.reduce((n, s) => n + s.rows.length, 0);
+  if (mode === 'server') return remote.snapshots.add(label, rows, encodeDump(dump));
   const d = await db();
   await d.add('snapshots', { ts: Date.now(), label, rows, data: encodeDump(dump) });
   const keys = await d.getAllKeys('snapshots');
@@ -236,18 +299,21 @@ export async function takeSnapshot(store: Store, label: string): Promise<void> {
 }
 
 export async function listSnapshots(): Promise<Omit<Snapshot, 'data'>[]> {
+  if (mode === 'server') return remote.snapshots.list();
   const d = await db();
   const all = await d.getAll('snapshots');
   return all.map(({ data: _d, ...rest }) => rest).reverse();
 }
 
 export async function readSnapshot(id: number): Promise<WorkbookDump | null> {
+  if (mode === 'server') return decodeDump(await remote.snapshots.read(id));
   const d = await db();
   const s = await d.get('snapshots', id);
   return s ? decodeDump(s.data) : null;
 }
 
 export async function lastSnapshotTime(): Promise<number> {
+  if (mode === 'server') return (await remote.snapshots.list())[0]?.ts ?? 0;
   const d = await db();
   const cursor = await d.transaction('snapshots').store.openCursor(null, 'prev');
   return cursor?.value.ts ?? 0;
@@ -255,6 +321,7 @@ export async function lastSnapshotTime(): Promise<number> {
 
 /** Просим браузер не удалять данные при нехватке места. */
 export async function requestPersistence(): Promise<boolean> {
+  if (mode === 'server') return true;
   try {
     if (!navigator.storage?.persist) return false;
     if (await navigator.storage.persisted()) return true;
@@ -265,6 +332,14 @@ export async function requestPersistence(): Promise<boolean> {
 }
 
 export async function storageInfo(): Promise<{ usage: number; quota: number; persisted: boolean }> {
+  if (mode === 'server') {
+    try {
+      const u = await remote.usage();
+      return { usage: u.usage, quota: u.disk, persisted: true };
+    } catch {
+      return { usage: 0, quota: 0, persisted: true };
+    }
+  }
   try {
     const est = await navigator.storage.estimate();
     const persisted = (await navigator.storage.persisted?.()) ?? false;

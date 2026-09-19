@@ -17,6 +17,8 @@ import {
   SquareArrowOutUpRight,
   SquareSigma,
   StickyNote,
+  TableCellsMerge,
+  TableCellsSplit,
   Trash2,
 } from 'lucide-react';
 import { useRef } from 'react';
@@ -36,13 +38,17 @@ import {
   setNumFmt,
   insertImages,
   insertRows,
+  mergeSelection,
   openCard,
   removeImage,
+  selectionHasMerges,
   sortByColumn,
   toast,
   unhideColumnsAround,
   unhideRowsAround,
+  unmergeSelection,
 } from './actions';
+import { requireEdit } from './editMode';
 import { gridApi } from './gridApi';
 import { store } from './instance';
 
@@ -118,6 +124,9 @@ export function ContextMenus() {
       ...(hasImg ? [{ label: 'Убрать фото', icon: <ImageMinus {...I} />, onSelect: removeImage }] : []),
       { label: 'Ссылка…', icon: <Link2 {...I} />, hint: 'Ctrl+K', onSelect: () => set({ dialog: { kind: 'link', r: sel.ar, c: sel.ac } }) },
       { label: x?.row?.cells[x.colId]?.note ? 'Изменить примечание…' : 'Примечание…', icon: <StickyNote {...I} />, onSelect: () => set({ dialog: { kind: 'note', r: sel.ar, c: sel.ac } }) },
+      selectionHasMerges()
+        ? { label: 'Разъединить ячейки', icon: <TableCellsSplit {...I} />, onSelect: unmergeSelection }
+        : { label: 'Объединить ячейки', icon: <TableCellsMerge {...I} />, disabled: nRows * nCols < 2, onSelect: mergeSelection },
       'sep',
       { label: `Вставить строки выше${rowsTxt}`, onSelect: () => insertRows('above') },
       { label: `Вставить строки ниже${rowsTxt}`, onSelect: () => insertRows('below') },
@@ -163,6 +172,9 @@ export function ContextMenus() {
   } else if (menu.kind === 'row') {
     items = [
       { label: 'Открыть карточку', icon: <SquareArrowOutUpRight {...I} />, onSelect: () => openCard(menu.r) },
+      selectionHasMerges()
+        ? { label: 'Разъединить ячейки', icon: <TableCellsSplit {...I} />, onSelect: unmergeSelection }
+        : { label: 'Объединить ячейки', icon: <TableCellsMerge {...I} />, disabled: nRows * nCols < 2, onSelect: mergeSelection },
       'sep',
       { label: `Вставить строки выше${rowsTxt}`, onSelect: () => insertRows('above') },
       { label: `Вставить строки ниже${rowsTxt}`, onSelect: () => insertRows('below') },
@@ -182,7 +194,7 @@ export function ContextMenus() {
         danger: true,
         disabled: !many,
         onSelect: () => {
-          if (!target) return;
+          if (!target || !requireEdit()) return;
           store.removeSheet(target.id);
           set({ sel: { ar: 0, ac: 0, fr: 0, fc: 0 } });
           toast(`Лист «${target.name}» удалён`, { action: { label: 'Вернуть', run: () => store.undo() } });

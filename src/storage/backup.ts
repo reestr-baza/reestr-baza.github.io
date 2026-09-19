@@ -3,7 +3,8 @@ import { downloadBlob, safeFileName, stamp } from '../lib/download';
 import type { Store } from '../model/store';
 import type { WorkbookDump } from './persist';
 import { dumpWorkbook, sheetsFromDump, writeWholeWorkbook } from './persist';
-import { db, type StoredImage } from './db';
+import type { StoredImage } from './db';
+import { getStoredImage, putStoredImage } from './images';
 
 /** id всех фото, на которые ссылаются ячейки и блоки карточек. */
 export function referencedImages(dump: WorkbookDump): Set<string> {
@@ -35,12 +36,11 @@ interface ImageManifest {
 export async function exportBackup(store: Store, onProgress?: (p: number) => void): Promise<number> {
   const dump = dumpWorkbook(store);
   const ids = [...referencedImages(dump)];
-  const d = await db();
   const files: Record<string, Uint8Array | [Uint8Array, { level: 0 }]> = {};
   const manifest: ImageManifest[] = [];
   let done = 0;
   for (const id of ids) {
-    const rec = await d.get('images', id);
+    const rec = await getStoredImage(id);
     if (!rec) continue;
     const full = `images/${id}.${ext(rec.full.type)}`;
     const thumb = `thumbs/${id}.${ext(rec.thumb.type)}`;
@@ -86,12 +86,7 @@ export async function readBackup(file: File): Promise<BackupContents> {
 
 /** Заменить текущую базу содержимым копии. */
 export async function restoreDump(store: Store, dump: WorkbookDump, images: StoredImage[] = []) {
-  const d = await db();
-  if (images.length) {
-    const tx = d.transaction('images', 'readwrite');
-    for (const img of images) void tx.store.put(img);
-    await tx.done;
-  }
+  for (const img of images) await putStoredImage(img);
   const sheets = sheetsFromDump(dump);
   const meta = { ...dump.meta, sheetIds: sheets.map((s) => s.id), activeSheet: sheets.some((s) => s.id === dump.meta.activeSheet) ? dump.meta.activeSheet : sheets[0].id };
   await writeWholeWorkbook(meta, sheets);

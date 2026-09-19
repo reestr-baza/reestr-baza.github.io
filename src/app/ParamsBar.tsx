@@ -3,6 +3,7 @@ import { parseLooseNumber } from '../formula/coerce';
 import { numberToText } from '../formula/coerce';
 import type { NamedValue } from '../model/types';
 import { useUI } from '../ui/state';
+import { requireEdit } from './editMode';
 import { gridApi } from './gridApi';
 import { store, useStoreVersion } from './instance';
 
@@ -14,6 +15,7 @@ function pretty(name: string) {
 
 function Param({ nv, index }: { nv: NamedValue; index: number }) {
   const [draft, setDraft] = useState<string | null>(null);
+  const editing = useUI((s) => s.editing);
   const shown = typeof nv.value === 'number' ? numberToText(nv.value) : nv.value;
   const commit = () => {
     if (draft === null) return;
@@ -34,13 +36,16 @@ function Param({ nv, index }: { nv: NamedValue; index: number }) {
         inputMode="decimal"
         spellCheck={false}
         size={Math.max(3, (draft ?? shown).length + 1)}
+        readOnly={!editing}
         onFocus={(e) => {
+          if (!editing) return;
           setDraft(shown);
           requestAnimationFrame(() => e.target.select());
         }}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
+          if (!editing && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.metaKey) requireEdit();
           if (e.key === 'Enter') {
             (e.target as HTMLInputElement).blur();
             gridApi.focus();

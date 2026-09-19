@@ -6,6 +6,7 @@ import { persister, store } from '../app/instance';
 import { formatBytes } from '../lib/download';
 import { exportBackup, readBackup, referencedImages, restoreDump, type BackupContents } from '../storage/backup';
 import { collectGarbage } from '../storage/images';
+import { mode } from '../storage/backend';
 import { dumpWorkbook, listSnapshots, readSnapshot, requestPersistence, storageInfo, takeSnapshot } from '../storage/persist';
 import { rowsWord } from '../app/StatusBar';
 import { Dialog } from '../ui/Dialog';
@@ -159,7 +160,7 @@ export function BackupDialog() {
             Сделать снимок сейчас
           </button>
         </div>
-        <p className="set-p set-p--muted">Снимок делается при открытии и каждые 20 минут работы. Хранятся последние 15.</p>
+        <p className="set-p set-p--muted">Снимок делается при открытии и каждые 20 минут работы. Хранятся последние {mode === 'server' ? 30 : 15}.</p>
         {snaps.length ? (
           <ul className="snaps">
             {snaps.map((s) => (
@@ -180,8 +181,14 @@ export function BackupDialog() {
       </section>
 
       <section className="set-sec">
-        <h3 className="set-h">Хранилище браузера</h3>
-        {info && (
+        <h3 className="set-h">{mode === 'server' ? 'Место на сервере' : 'Хранилище браузера'}</h3>
+        {info && mode === 'server' && (
+          <p className="set-p">
+            База и фото занимают {formatBytes(info.usage)}
+            {info.quota ? ` — на диске сервера ${formatBytes(info.quota)}` : ''}. Каждую ночь сервер сам сохраняет копию базы и хранит последние 30.
+          </p>
+        )}
+        {info && mode !== 'server' && (
           <p className="set-p">
             Занято {formatBytes(info.usage)}
             {info.quota ? ` из доступных ${formatBytes(info.quota)}` : ''}.{' '}

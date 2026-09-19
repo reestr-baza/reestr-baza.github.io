@@ -6,7 +6,7 @@ import { gridApi } from '../app/gridApi';
 import { store } from '../app/instance';
 import { colToLetters } from '../formula/a1';
 import { isUrl, normalizeUrl, safeHref } from '../model/format';
-import { getStoredImage } from '../storage/images';
+import { getImageMeta } from '../storage/images';
 import { Dialog } from '../ui/Dialog';
 import { useUI } from '../ui/state';
 import { useImageUrl } from '../ui/useImage';
@@ -239,7 +239,7 @@ export function Lightbox() {
     if (!lb) return;
     let alive = true;
     setMeta(null);
-    void getStoredImage(lb.imageId).then((r) => alive && r && setMeta({ w: r.w, h: r.h, name: r.name }));
+    void getImageMeta(lb.imageId).then((r) => alive && r && setMeta({ w: r.w, h: r.h, name: r.name }));
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();

@@ -61,6 +61,8 @@ interface UIState {
   clipboardId: string | null;
   /** «Бегущие муравьи» вокруг скопированного диапазона */
   copyRange: { r1: number; c1: number; r2: number; c2: number; cut: boolean } | null;
+  /** Режим редактирования. Выключен — только просмотр: база открывается так, чтобы её нельзя было случайно испортить */
+  editing: boolean;
   set: (patch: Partial<UIState>) => void;
   setSel: (sel: Selection) => void;
   toast: (t: Omit<Toast, 'id'>) => void;
@@ -80,6 +82,7 @@ export const useUI = create<UIState>((set) => ({
   searchOpen: false,
   clipboardId: null,
   copyRange: null,
+  editing: false,
   set: (patch) => set(patch),
   setSel: (sel) => set({ sel }),
   toast: (t) => {

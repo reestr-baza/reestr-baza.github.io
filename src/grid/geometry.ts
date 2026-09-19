@@ -1,3 +1,4 @@
+import { viewMerges, type ViewMerges } from '../model/merges';
 import type { SheetView, Store } from '../model/store';
 import type { Sheet } from '../model/types';
 
@@ -30,6 +31,8 @@ export interface Geometry {
   /** есть скрытые строки/столбцы в конце */
   hiddenAfterRows: boolean;
   hiddenAfterCols: boolean;
+  /** Объединённые ячейки в координатах представления */
+  merges: ViewMerges;
 }
 
 /** maxFrozenW — сколько места могут занять закреплённые столбцы (на телефоне меньше). */
@@ -98,6 +101,7 @@ export function buildGeometry(store: Store, sheet: Sheet, view: SheetView, maxFr
     hiddenColBefore,
     hiddenAfterRows,
     hiddenAfterCols,
+    merges: viewMerges(store, sheet, view),
   };
 }
 

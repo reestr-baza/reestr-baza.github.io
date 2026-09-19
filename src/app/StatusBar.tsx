@@ -5,6 +5,7 @@ import { emptySheet } from '../model/store';
 import { selRect, useUI } from '../ui/state';
 import { cellAt, ctx } from './actions';
 import { gridApi } from './gridApi';
+import { mode } from '../storage/backend';
 import { store, useSaveState, useStoreVersion } from './instance';
 
 function plural(n: number, one: string, few: string, many: string) {
@@ -151,7 +152,8 @@ function Aggregates() {
 
 function SaveIndicator() {
   const s = useSaveState();
-  const text = s.status === 'saving' ? 'Сохраняем…' : s.status === 'error' ? 'Не сохранено — повторим' : 'Сохранено в браузере';
+  const where = mode === 'server' ? 'на сервере' : 'в браузере';
+  const text = s.status === 'saving' ? 'Сохраняем…' : s.status === 'error' ? 'Нет связи — повторим' : `Сохранено ${where}`;
   return (
     <span className={'save save--' + s.status} role="status" title={s.error}>
       <span className="save-dot" aria-hidden />

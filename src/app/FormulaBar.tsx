@@ -3,14 +3,16 @@ import { colToLetters, lettersToCol, normalizeLookalikes } from '../formula/a1';
 import { shiftFormula } from '../formula/refs';
 import { applyHint, FunctionHints, useFunctionHints } from '../grid/Editor';
 import { useUI } from '../ui/state';
-import { applyColumnFormula, cancelEdit, cellAt, commitEdit, ctx, editableText, setSelection, startEdit } from './actions';
+import { requireEdit } from './editMode';
+import { applyColumnFormula, cancelEdit, cellAt, commitEdit, ctx, editableText, isSingleCell, setSelection, startEdit } from './actions';
 import { gridApi } from './gridApi';
 import { useStoreVersion } from './instance';
 
 function NameBox() {
   const sel = useUI((s) => s.sel);
   const x = cellAt(sel.ar, sel.ac);
-  const multi = sel.ar !== sel.fr || sel.ac !== sel.fc;
+  useStoreVersion();
+  const multi = !isSingleCell(sel);
   const label = x ? `${colToLetters(x.c)}${x.phys + 1}` : '';
   const [draft, setDraft] = useState<string | null>(null);
   const range = multi ? `${Math.abs(sel.fr - sel.ar) + 1}×${Math.abs(sel.fc - sel.ac) + 1}` : '';
@@ -53,6 +55,7 @@ export function FormulaBar() {
   useStoreVersion();
   const sel = useUI((s) => s.sel);
   const edit = useUI((s) => s.edit);
+  const editing = useUI((s) => s.editing);
   const set = useUI((s) => s.set);
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
@@ -118,7 +121,10 @@ export function FormulaBar() {
           aria-label="Содержимое ячейки"
           value={text}
           spellCheck={false}
+          readOnly={!editing}
           onFocus={() => {
+            // в просмотре строку формул можно читать и копировать из неё
+            if (!editing) return;
             if (!edit) startEdit('edit', undefined, 'bar');
             else if (edit.source !== 'bar') set({ edit: { ...edit, source: 'bar' } });
           }}
@@ -129,7 +135,13 @@ export function FormulaBar() {
             else startEdit('edit', e.target.value, 'bar');
           }}
           onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-          onKeyDown={onKeyDown}
+          onKeyDown={(e) => {
+            if (!editing) {
+              if ((e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.metaKey) requireEdit();
+              return;
+            }
+            onKeyDown(e);
+          }}
         />
         {edit?.source === 'bar' && (
           <FunctionHints

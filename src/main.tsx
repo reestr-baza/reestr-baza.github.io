@@ -10,11 +10,23 @@ import { setInstances, wireSaveState } from './app/instance';
 import { Store } from './model/store';
 import { lastSnapshotTime, loadWorkbook, Persister, requestPersistence, takeSnapshot, writeWholeWorkbook } from './storage/persist';
 import { buildDemo } from './storage/seed';
+import { detectMode, mode } from './storage/backend';
+import { Login } from './app/Login';
+import { requireEdit } from './app/editMode';
 
 const SNAPSHOT_EVERY = 20 * 60 * 1000;
 
+let reactRoot: ReturnType<typeof createRoot> | null = null;
+
 async function boot() {
   const root = document.getElementById('root')!;
+  reactRoot ??= createRoot(root);
+  const state = await detectMode();
+  if (state === 'login') {
+    document.getElementById('boot')?.remove();
+    reactRoot.render(<Login onDone={() => void boot()} />);
+    return;
+  }
   let data = await loadWorkbook();
   let fresh = false;
   if (!data) {
@@ -23,11 +35,14 @@ async function boot() {
     fresh = true;
   }
   const store = new Store(data.meta, data.sheets);
+  // база открывается в режиме просмотра — менять можно после кнопки «Редактировать»
+  store.readOnly = true;
+  store.onBlocked = () => requireEdit();
   const persister = new Persister(store);
   setInstances(store, persister);
   wireSaveState(persister);
 
-  createRoot(root).render(
+  reactRoot.render(
     <StrictMode>
       <App />
     </StrictMode>,
@@ -44,6 +59,9 @@ async function boot() {
     }
   }, SNAPSHOT_EVERY);
 
+  // сервер закрыл сессию (истекла или вышли на другом устройстве) — просим войти снова
+  if (mode === 'server') window.addEventListener('reestr:logged-out', () => location.reload(), { once: true });
+
   // просим браузер не очищать базу при первой же правке
   const off = store.onCommit(() => {
     off();
@@ -58,7 +76,9 @@ boot().catch((e) => {
     el.textContent = '';
     const p = document.createElement('p');
     p.textContent =
-      'Не удалось открыть базу в этом браузере. Если открыт режим инкогнито — откройте страницу в обычном окне. Подробности: ' +
+      (mode === 'server'
+        ? 'Не удалось загрузить базу с сервера. Проверьте интернет и обновите страницу. Подробности: '
+        : 'Не удалось открыть базу в этом браузере. Если открыт режим инкогнито — откройте страницу в обычном окне. Подробности: ') +
       (e instanceof Error ? e.message : String(e));
     el.appendChild(p);
   }

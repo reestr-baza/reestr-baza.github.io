@@ -12,6 +12,8 @@ import {
   PaintBucket,
   Redo2,
   Strikethrough,
+  TableCellsMerge,
+  TableCellsSplit,
   Underline,
   Undo2,
   WrapText,
@@ -24,7 +26,7 @@ import { RowsDensity, VAlignBottom, VAlignMiddle, VAlignTop } from '../ui/icons'
 import { Menu, type MenuItem } from '../ui/Menu';
 import { Popover } from '../ui/Popover';
 import { useUI } from '../ui/state';
-import { activeStyle, applyStyle, ctx, insertImages, redo, setNumFmt, toggleStyle, undo } from './actions';
+import { activeStyle, applyStyle, ctx, insertImages, mergeSelection, redo, selectionHasMerges, setNumFmt, toggleStyle, undo, unmergeSelection } from './actions';
 import { gridApi } from './gridApi';
 import { store, useStoreVersion } from './instance';
 import { ParamsBar } from './ParamsBar';
@@ -96,6 +98,7 @@ export function Toolbar() {
   const nf = st.nf;
   const decimals = nf && 'd' in nf ? nf.d : nf?.k === 'general' || !nf ? null : 0;
   const hasFilters = Object.keys(sheet.filters).length > 0 || store.search !== '';
+  const merged = selectionHasMerges();
 
   const cur = (c: Currency) => {
     const on = nf?.k === 'currency' && nf.c === c;
@@ -136,7 +139,7 @@ export function Toolbar() {
       data-tip={{ S: 'Компактные строки', M: 'Средние строки', L: 'Крупные строки для фото' }[d]}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
-        store.transact('Высота строк', () => store.setSheetMeta(sheet, { density: d }));
+        store.allow(() => store.transact('Высота строк', () => store.setSheetMeta(sheet, { density: d })));
         gridApi.focus();
       }}
     >
@@ -232,6 +235,15 @@ export function Toolbar() {
         <Tb label="Переносить текст" pressed={!!st.wrap} onClick={() => applyStyle({ wrap: !st.wrap || undefined }, 'Перенос текста')}>
           <WrapText {...I} />
         </Tb>
+        {merged ? (
+          <Tb label="Разъединить ячейки" pressed onClick={unmergeSelection}>
+            <TableCellsSplit {...I} />
+          </Tb>
+        ) : (
+          <Tb label="Объединить ячейки" hint="выделите несколько ячеек" onClick={mergeSelection}>
+            <TableCellsMerge {...I} />
+          </Tb>
+        )}
       </div>
 
       <div className="tb-group">
@@ -263,7 +275,7 @@ export function Toolbar() {
       </div>
 
       {hasFilters && (
-        <div className="tb-group">
+        <div className="tb-group tb-group--free">
           <button
             type="button"
             className="tb tb--text"

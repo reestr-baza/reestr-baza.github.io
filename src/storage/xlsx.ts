@@ -5,6 +5,7 @@ import { isErr } from '../formula/values';
 import { downloadBlob, safeFileName, stamp } from '../lib/download';
 import { uid } from '../lib/ids';
 import { parseInput } from '../model/format';
+import { mergeBounds } from '../model/merges';
 import type { Store } from '../model/store';
 import { DEFAULT_COL_WIDTH, type Cell, type Column, type Currency, type NumFmt, type Row, type RowId } from '../model/types';
 import { getStoredImage } from './images';
@@ -257,6 +258,16 @@ export async function exportXlsx(store: Store, scope: 'sheet' | 'all') {
             editAs: 'twoCell',
           } as never);
         }
+      }
+    }
+    // объединённые ячейки (строка 1 — шапка)
+    for (const m of sheet.merges ?? []) {
+      const b = mergeBounds(store, sheet, m);
+      if (!b) continue;
+      try {
+        ws.mergeCells(b.p0 + 2, b.q0 + 1, b.p1 + 2, b.q1 + 1);
+      } catch {
+        /* пересекающееся объединение Excel не примет — пропускаем */
       }
     }
   }

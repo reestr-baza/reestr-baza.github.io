@@ -6,11 +6,13 @@ import {
   Bold,
   ChevronLeft,
   ChevronRight,
+  Grid2x2,
   ImageMinus,
   ImagePlus,
   Italic,
   MoreHorizontal,
   PaintBucket,
+  Pencil,
   Plus,
   Printer,
   Trash2,
@@ -20,9 +22,10 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ctx, setSelection, toast } from '../app/actions';
+import { requireEdit, setEditing } from '../app/editMode';
 import { gridApi } from '../app/gridApi';
 import { store, useStoreVersion } from '../app/instance';
-import type { CardBlock, CellStyle, Column, Row, Sheet } from '../model/types';
+import type { BlockSpan, CardBlock, CellStyle, Column, Row, Sheet } from '../model/types';
 import { importImage, isImageFile } from '../storage/images';
 import { ColorPicker } from '../ui/ColorPicker';
 import { VAlignBottom, VAlignMiddle, VAlignTop } from '../ui/icons';
@@ -68,6 +71,74 @@ function titleOf(sheet: Sheet, phys: number, keyC: number): string {
   return parts.join(' · ');
 }
 
+// ─── размер блока ────────────────────────────────────────────────────────────
+
+const MAX_SPAN = 3;
+const areaOf = (s: BlockSpan) => (s.cs ?? 1) * (s.rs ?? 1);
+
+/** Блок можно растянуть на несколько клеток — например, главное фото 2×2. */
+function spanStyle(s: BlockSpan): React.CSSProperties | undefined {
+  const cs = s.cs ?? 1;
+  const rs = s.rs ?? 1;
+  if (cs === 1 && rs === 1) return undefined;
+  return { gridColumn: `span ${cs}`, gridRow: `span ${rs}`, '--cs': cs, '--rs': rs } as React.CSSProperties;
+}
+
+function SpanPicker({ value, onPick }: { value: BlockSpan; onPick: (s: BlockSpan) => void }) {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [hover, setHover] = useState<{ c: number; r: number } | null>(null);
+  const cs = value.cs ?? 1;
+  const rs = value.rs ?? 1;
+  const show = hover ?? { c: cs, r: rs };
+  return (
+    <>
+      <button
+        type="button"
+        className="tb tb--text"
+        aria-label={`Размер блока: ${cs} × ${rs}`}
+        data-tip="Размер блока — растянуть на несколько клеток"
+        aria-haspopup="dialog"
+        aria-expanded={!!el}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={(e) => setEl(el ? null : e.currentTarget)}
+      >
+        <Grid2x2 {...I} />
+        <span>
+          {cs}×{rs}
+        </span>
+      </button>
+      {el && (
+        <Popover anchor={{ el }} onClose={() => setEl(null)} className="pop--span" label="Размер блока">
+          <div className="span-pick" onMouseLeave={() => setHover(null)}>
+            {Array.from({ length: MAX_SPAN * MAX_SPAN }, (_, i) => {
+              const c = (i % MAX_SPAN) + 1;
+              const r = Math.floor(i / MAX_SPAN) + 1;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  className={'span-cell' + (c <= show.c && r <= show.r ? ' is-on' : '')}
+                  aria-label={`${c} в ширину, ${r} в высоту`}
+                  aria-pressed={c === cs && r === rs}
+                  onMouseEnter={() => setHover({ c, r })}
+                  onFocus={() => setHover({ c, r })}
+                  onClick={() => {
+                    onPick({ cs: c > 1 ? c : undefined, rs: r > 1 ? r : undefined });
+                    setEl(null);
+                  }}
+                />
+              );
+            })}
+          </div>
+          <div className="span-label">
+            {show.c} × {show.r} <span>ширина × высота</span>
+          </div>
+        </Popover>
+      )}
+    </>
+  );
+}
+
 // ─── блок карточки ───────────────────────────────────────────────────────────
 
 /** Сильнее увеличивать маленькое превью бессмысленно — только размоется */
@@ -107,10 +178,20 @@ function BlockImage({ id, onOpen }: { id: string; onOpen: () => void }) {
   );
 }
 
-function AutoText({ value, onChange, style, placeholder, onFocus }: { value: string; onChange: (v: string) => void; style: React.CSSProperties; placeholder: string; onFocus: () => void }) {
+function AutoText({ value, onChange, style, placeholder, onFocus, readOnly }: { value: string; onChange: (v: string) => void; style: React.CSSProperties; placeholder: string; onFocus: () => void; readOnly: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
+  // карточку могут закрыть кликом мимо, пока курсор в поле: поле исчезает без blur — сохраняем при размонтировании
+  const latest = useRef({ draft, value, onChange });
+  latest.current = { draft, value, onChange };
+  useEffect(
+    () => () => {
+      const l = latest.current;
+      if (l.draft !== l.value) l.onChange(l.draft);
+    },
+    [],
+  );
   useLayoutEffect(() => {
     const ta = ref.current;
     if (!ta) return;
@@ -124,7 +205,8 @@ function AutoText({ value, onChange, style, placeholder, onFocus }: { value: str
       style={style}
       value={draft}
       rows={1}
-      placeholder={placeholder}
+      placeholder={readOnly ? '' : placeholder}
+      readOnly={readOnly}
       aria-label="Текст блока"
       onFocus={onFocus}
       onChange={(e) => setDraft(e.target.value)}
@@ -147,6 +229,7 @@ function Block({
   block,
   index,
   active,
+  editable,
   onActivate,
   onChange,
   onOpenImage,
@@ -154,11 +237,13 @@ function Block({
   block: CardBlock;
   index: number;
   active: boolean;
+  editable: boolean;
   onActivate: () => void;
   onChange: (b: CardBlock, label: string) => void;
   onOpenImage: (id: string) => void;
 }) {
   const [over, setOver] = useState(false);
+  const wasActive = useRef(false);
   const st = block.st ?? {};
   const textStyle: React.CSSProperties = {
     textAlign: st.ha ?? 'left',
@@ -169,13 +254,23 @@ function Block({
   };
   return (
     <div
-      className={'blk' + (active ? ' is-active' : '') + (over ? ' is-drop' : '') + (block.img ? ' has-img' : '')}
-      style={{ backgroundColor: st.bg }}
+      className={'blk' + (active ? ' is-active' : '') + (over ? ' is-drop' : '') + (block.img ? ' has-img' : '') + (spanStyle(block) ? ' blk--span' : '')}
+      style={{ backgroundColor: st.bg, ...spanStyle(block) }}
       data-va={st.va ?? 'bottom'}
-      onPointerDown={onActivate}
+      onPointerDown={() => {
+        wasActive.current = active;
+        onActivate();
+      }}
       onFocus={onActivate}
+      onClick={(e) => {
+        // клик по пустому месту блока — сразу можно печатать
+        if (!editable || (e.target as HTMLElement).closest('.blk-img, .blk-text')) return;
+        const ta = e.currentTarget.querySelector('textarea');
+        ta?.focus();
+        ta?.setSelectionRange(ta.value.length, ta.value.length);
+      }}
       onDragOver={(e) => {
-        if (Array.from(e.dataTransfer.types).includes('Files')) {
+        if (editable && Array.from(e.dataTransfer.types).includes('Files')) {
           e.preventDefault();
           setOver(true);
         }
@@ -184,7 +279,7 @@ function Block({
       onDrop={() => setOver(false)}
       onPaste={async (e) => {
         const f = Array.from(e.clipboardData.files).find(isImageFile);
-        if (!f) return;
+        if (!f || !editable) return;
         e.preventDefault();
         const id = await importImage(f, f.name);
         onChange({ ...block, img: id }, 'Фото в блоке');
@@ -193,17 +288,23 @@ function Block({
       role="group"
       data-block={index}
     >
-      {block.img && <BlockImage id={block.img} onOpen={() => onOpenImage(block.img!)} />}
+      {block.img && <BlockImage id={block.img} onOpen={() => (!editable || wasActive.current) && onOpenImage(block.img!)} />}
       <div className="blk-textwrap">
         <AutoText
           value={block.text ?? ''}
           style={textStyle}
-          placeholder={block.img ? 'Подпись' : 'Текст или фото'}
+          placeholder={block.img ? 'Подпись' : ''}
+          readOnly={!editable}
           onFocus={onActivate}
           onChange={(v) => onChange({ ...block, text: v || undefined }, 'Текст блока')}
         />
       </div>
-      {!block.img && !block.text && <span className="blk-hint" aria-hidden>перетащите фото</span>}
+      {editable && !block.img && !block.text && (
+        <span className="blk-hint" aria-hidden>
+          <Plus size={14} strokeWidth={1.75} />
+          фото или текст
+        </span>
+      )}
     </div>
   );
 }
@@ -262,6 +363,9 @@ function BlockToolbar({ block, onChange }: { block: CardBlock; onChange: (b: Car
       <Btn label="Подчёркнутый" on={!!st.u} onClick={() => patch({ u: !st.u }, 'Подчёркнутый')}>
         <Underline {...I} />
       </Btn>
+      <span className="tb-sep" aria-hidden />
+      <SpanPicker value={block} onPick={(sp) => onChange({ ...block, ...sp }, 'Размер блока')} />
+      <span className="tb-sep" aria-hidden />
       <Btn label="Цвет текста" onClick={(e) => setColor({ kind: 'fg', el: e.currentTarget })}>
         <span className="tb-color">
           <Baseline {...I} />
@@ -305,22 +409,27 @@ function BlockToolbar({ block, onChange }: { block: CardBlock; onChange: (b: Car
 
 // ─── фото из строки таблицы ──────────────────────────────────────────────────
 
-function LinkedBlock({ img, colName, index, active, onActivate, onOpen }: { img: string; colName: string; index: number; active: boolean; onActivate: () => void; onOpen: () => void }) {
+function LinkedBlock({ img, colName, index, span, active, editable, onActivate, onOpen }: { img: string; colName: string; index: number; span: BlockSpan; active: boolean; editable: boolean; onActivate: () => void; onOpen: () => void }) {
+  const wasActive = useRef(false);
   return (
     <div
-      className={'blk blk--linked has-img' + (active ? ' is-active' : '')}
+      className={'blk blk--linked has-img' + (active ? ' is-active' : '') + (spanStyle(span) ? ' blk--span' : '')}
+      style={spanStyle(span)}
       data-block={index}
       role="group"
       aria-label={`Фото из таблицы, столбец «${colName}»`}
-      onPointerDown={onActivate}
+      onPointerDown={() => {
+        wasActive.current = active;
+        onActivate();
+      }}
     >
-      <BlockImage id={img} onOpen={onOpen} />
+      <BlockImage id={img} onOpen={() => (!editable || wasActive.current) && onOpen()} />
       <span className="blk-origin">из таблицы · {colName}</span>
     </div>
   );
 }
 
-function LinkedToolbar({ colName, onReplace, onRemove }: { colName: string; onReplace: (f: File) => void; onRemove: () => void }) {
+function LinkedToolbar({ colName, span, onSpan, onReplace, onRemove }: { colName: string; span: BlockSpan; onSpan: (s: BlockSpan) => void; onReplace: (f: File) => void; onRemove: () => void }) {
   const file = useRef<HTMLInputElement>(null);
   return (
     <div className="blk-tools" role="toolbar" aria-label="Фото из таблицы">
@@ -330,6 +439,8 @@ function LinkedToolbar({ colName, onReplace, onRemove }: { colName: string; onRe
       <button type="button" className="tb" aria-label="Убрать фото из строки таблицы" data-tip="Убрать фото из строки таблицы" onClick={onRemove}>
         <ImageMinus {...I} />
       </button>
+      <span className="tb-sep" aria-hidden />
+      <SpanPicker value={span} onPick={onSpan} />
       <span className="blk-tools-note">Это фото из столбца «{colName}» — меняется вместе с таблицей</span>
       <input
         ref={file}
@@ -374,6 +485,7 @@ export function ProductCard({ rowId }: { rowId: string }) {
   const [printing, setPrinting] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const editable = useUI((s) => s.editing);
   const dlg = useRef<HTMLDivElement>(null);
   // двойной клик по артикулу: второй клик не должен тут же закрыть карточку
   const openedAt = useRef(performance.now());
@@ -430,10 +542,12 @@ export function ProductCard({ rowId }: { rowId: string }) {
     .map((col) => ({ col, img: row.cells[col.id]?.img }))
     .filter((x): x is { col: Column; img: string } => !!x.img);
   const L = linked.length;
-  const total = Math.max(MIN_BLOCK_ROWS * BLOCKS_PER_ROW, Math.ceil((L + blocks.length) / BLOCKS_PER_ROW) * BLOCKS_PER_ROW);
-  const rowsOfBlocks = total / BLOCKS_PER_ROW;
+  const linkedSpan = (colId: string): BlockSpan => row.cardLinked?.[colId] ?? {};
+  // блоки бывают больше одной клетки: считаем занятую площадь, остаток ряда заполняем пустыми клетками
+  const used = linked.reduce((n, x) => n + areaOf(linkedSpan(x.col.id)), 0) + blocks.reduce((n, b) => n + areaOf(b), 0);
+  const rowsOfBlocks = Math.max(MIN_BLOCK_ROWS, Math.ceil(used / BLOCKS_PER_ROW));
   // собственные блоки карточки идут после фото из таблицы
-  const slots: CardBlock[] = Array.from({ length: total - L }, (_, i) => blocks[i] ?? {});
+  const slots: CardBlock[] = [...blocks, ...Array.from({ length: rowsOfBlocks * BLOCKS_PER_ROW - used }, () => ({}))];
   const photos = L + slots.filter((b) => b.img).length;
 
   // цена для этикетки: первый столбец в рублях
@@ -454,7 +568,7 @@ export function ProductCard({ rowId }: { rowId: string }) {
   /** Сохранить блоки; хвостовые пустые не храним, но число рядов помним по последнему блоку. */
   const saveSlots = (next: CardBlock[], label: string) => {
     let end = next.length;
-    while (end > 0 && !next[end - 1].img && !next[end - 1].text && !next[end - 1].st) end--;
+    while (end > 0 && !next[end - 1].img && !next[end - 1].text && !next[end - 1].st && !next[end - 1].cs && !next[end - 1].rs) end--;
     store.transact(label, () => store.patchRow(sheet, rowId, { card: end ? next.slice(0, end) : undefined }));
   };
 
@@ -466,6 +580,7 @@ export function ProductCard({ rowId }: { rowId: string }) {
 
   /** Несколько фото сразу: первое — в выбранный блок, остальные — в следующие свободные. */
   const addPhotos = async (files: File[], startAt?: number) => {
+    if (!requireEdit()) return;
     const imgs = files.filter(isImageFile);
     if (!imgs.length) {
       toast('Это не изображение. Подойдут JPG, PNG, WebP, HEIC из Safari', { tone: 'error' });
@@ -523,13 +638,18 @@ export function ProductCard({ rowId }: { rowId: string }) {
 
   const removeLastBlockRow = () => {
     if (rowsOfBlocks <= MIN_BLOCK_ROWS) return;
-    const next = slots.slice(0, Math.max(0, slots.length - BLOCKS_PER_ROW));
+    // убираем с конца блоки общей площадью в один ряд
+    let k = slots.length;
+    let area = 0;
+    while (k > 0 && area < BLOCKS_PER_ROW) area += areaOf(slots[--k]);
+    const next = slots.slice(0, k);
     const dropped = slots.slice(next.length);
     if (dropped.some((b) => b.img || b.text) && !confirm('В последнем ряду есть фото или текст. Удалить ряд?')) return;
     store.transact('Удаление ряда блоков', () => store.patchRow(sheet, rowId, { card: next }));
   };
 
   const deleteRow = () => {
+    if (!requireEdit()) return;
     const label = sku || `строка ${phys + 1}`;
     const nextId = view.rows[vr + 1] ?? view.rows[vr - 1];
     store.deleteRows(sheet, [rowId]);
@@ -610,10 +730,17 @@ export function ProductCard({ rowId }: { rowId: string }) {
           </header>
 
           <div className="blk-bar">
-            <button type="button" className="btn btn--sm" onClick={() => filesInput.current?.click()} disabled={!!uploading}>
-              <ImagePlus size={15} strokeWidth={1.75} aria-hidden />
-              {uploading ?? 'Добавить фото'}
-            </button>
+            {editable ? (
+              <button type="button" className="btn btn--sm" onClick={() => filesInput.current?.click()} disabled={!!uploading}>
+                <ImagePlus size={15} strokeWidth={1.75} aria-hidden />
+                {uploading ?? 'Добавить фото'}
+              </button>
+            ) : (
+              <button type="button" className="btn btn--sm" onClick={() => setEditing(true)}>
+                <Pencil size={14} strokeWidth={1.75} aria-hidden />
+                Редактировать
+              </button>
+            )}
             <input
               ref={filesInput}
               type="file"
@@ -626,9 +753,19 @@ export function ProductCard({ rowId }: { rowId: string }) {
                 if (files.length) void addPhotos(files, activeBlock ?? undefined);
               }}
             />
-            {activeBlock !== null && activeBlock < L ? (
+            {!editable ? (
+              <span className="blk-bar-hint">Режим просмотра: фото и текст не изменятся случайно. Чтобы заполнить карточку, нажмите «Редактировать».</span>
+            ) : activeBlock !== null && activeBlock < L ? (
               <LinkedToolbar
                 colName={linked[activeBlock].col.name}
+                span={linkedSpan(linked[activeBlock].col.id)}
+                onSpan={(sp) => {
+                  const colId = linked[activeBlock].col.id;
+                  const next = { ...row.cardLinked };
+                  if (sp.cs || sp.rs) next[colId] = sp;
+                  else delete next[colId];
+                  store.transact('Размер блока', () => store.patchRow(sheet, rowId, { cardLinked: Object.keys(next).length ? next : undefined }));
+                }}
                 onReplace={(f) => void addPhotos([f], activeBlock)}
                 onRemove={() => {
                   const col = linked[activeBlock].col;
@@ -639,7 +776,7 @@ export function ProductCard({ rowId }: { rowId: string }) {
             ) : activeBlock !== null ? (
               <BlockToolbar block={slots[activeBlock - L]} onChange={(b, l) => saveBlock(activeBlock - L, b, l)} />
             ) : (
-              <span className="blk-bar-hint">Можно выбрать сразу несколько фото или перетащить их на сетку. Выберите блок — появятся выравнивание и цвет.</span>
+              <span className="blk-bar-hint">Нажмите на клетку, чтобы написать текст, или перетащите на неё фото. Выберите блок — появятся размер, выравнивание и цвет.</span>
             )}
           </div>
 
@@ -649,7 +786,7 @@ export function ProductCard({ rowId }: { rowId: string }) {
             onDragOver={(e) => {
               if (Array.from(e.dataTransfer.types).includes('Files')) {
                 e.preventDefault();
-                setDragOver(true);
+                if (editable) setDragOver(true);
               }
             }}
             onDragLeave={(e) => {
@@ -660,13 +797,14 @@ export function ProductCard({ rowId }: { rowId: string }) {
               const files = Array.from(e.dataTransfer.files);
               if (!files.length) return;
               e.preventDefault();
+              if (!requireEdit()) return;
               const blockEl = (e.target as HTMLElement).closest<HTMLElement>('[data-block]');
               void addPhotos(files, blockEl ? Number(blockEl.dataset.block) : undefined);
             }}
           >
             <div className="blk-grid" style={{ '--rows': rowsOfBlocks } as React.CSSProperties}>
               {linked.map((x, i) => (
-                <LinkedBlock key={'t' + x.col.id} img={x.img} colName={x.col.name} index={i} active={activeBlock === i} onActivate={() => setActiveBlock(i)} onOpen={() => openImage(x.img)} />
+                <LinkedBlock key={'t' + x.col.id} img={x.img} colName={x.col.name} index={i} span={linkedSpan(x.col.id)} active={activeBlock === i} editable={editable} onActivate={() => setActiveBlock(i)} onOpen={() => openImage(x.img)} />
               ))}
               {slots.map((b, i) => (
                 <Block
@@ -674,22 +812,25 @@ export function ProductCard({ rowId }: { rowId: string }) {
                   block={b}
                   index={i + L}
                   active={activeBlock === i + L}
+                  editable={editable}
                   onActivate={() => setActiveBlock(i + L)}
                   onChange={(nb, l) => saveBlock(i, nb, l)}
                   onOpenImage={openImage}
                 />
               ))}
             </div>
-            <div className="blk-actions">
-              <button type="button" className="btn btn--ghost btn--sm" onClick={addBlockRow}>
-                <Plus size={14} strokeWidth={2} aria-hidden /> Ряд блоков
-              </button>
-              {rowsOfBlocks > MIN_BLOCK_ROWS && (
-                <button type="button" className="btn btn--ghost btn--sm" onClick={removeLastBlockRow}>
-                  Убрать последний ряд
+            {editable && (
+              <div className="blk-actions">
+                <button type="button" className="btn btn--ghost btn--sm" onClick={addBlockRow}>
+                  <Plus size={14} strokeWidth={2} aria-hidden /> Ряд блоков
                 </button>
-              )}
-            </div>
+                {rowsOfBlocks > MIN_BLOCK_ROWS && (
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={removeLastBlockRow}>
+                    Убрать последний ряд
+                  </button>
+                )}
+              </div>
+            )}
           </section>
         </div>
         {more && (

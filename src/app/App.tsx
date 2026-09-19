@@ -106,7 +106,7 @@ function RemoteChangeBanner() {
   if (!stale) return null;
   return (
     <div className="banner" role="alert">
-      <span>База изменена в другой вкладке.</span>
+      <span>База изменена в другой вкладке или на другом устройстве.</span>
       <button type="button" className="btn btn--sm" onClick={() => location.reload()}>
         Обновить
       </button>
@@ -115,6 +115,25 @@ function RemoteChangeBanner() {
 }
 
 export function App() {
+  const editing = useUI((s) => s.editing);
+  // файл, брошенный мимо клетки, браузер открыл бы вместо сайта — не даём
+  useEffect(() => {
+    const isFiles = (e: DragEvent) => !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+    const over = (e: DragEvent) => {
+      if (isFiles(e)) e.preventDefault();
+    };
+    const drop = (e: DragEvent) => {
+      if (!isFiles(e) || e.defaultPrevented) return;
+      e.preventDefault();
+      useUI.getState().toast({ text: 'Отпустите фото над ячейкой таблицы или клеткой карточки' });
+    };
+    window.addEventListener('dragover', over);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragover', over);
+      window.removeEventListener('drop', drop);
+    };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'F1') {
@@ -127,7 +146,7 @@ export function App() {
   }, []);
 
   return (
-    <div className="app">
+    <div className={'app' + (editing ? '' : ' is-view')}>
       <a className="skip" href="#grid" onClick={(e) => {
         e.preventDefault();
         document.querySelector<HTMLElement>('.g')?.focus();

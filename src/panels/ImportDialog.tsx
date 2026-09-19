@@ -61,7 +61,8 @@ export function ImportDialog({ initialFile }: { initialFile?: File | null }) {
       } else {
         // имена листов не должны совпадать
         const used = new Set(store.sheetList().map((s) => s.name.toLocaleLowerCase('ru')));
-        store.transact('Импорт', () => {
+        // импорт — осознанное действие через окно, его можно и в режиме просмотра
+        store.allow(() => store.transact('Импорт', () => {
           for (const s of res.sheets) {
             let name = s.name;
             let k = 2;
@@ -71,7 +72,7 @@ export function ImportDialog({ initialFile }: { initialFile?: File | null }) {
             store.addSheet(s, s === res.sheets[0]);
           }
           if (res.names.length) store.setWorkbookMeta({ names: mergeNames(store.meta.names, res.names) });
-        });
+        }));
       }
       set({ dialog: null, sel: { ar: 0, ac: 0, fr: 0, fc: 0 } });
       const params = res.names.length ? `. Из шапки взяты значения: ${res.names.map((n) => n.name).join(', ')}` : '';

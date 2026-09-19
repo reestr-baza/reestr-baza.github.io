@@ -1,3 +1,4 @@
+import { mode, remote } from './backend';
 import { db, type StoredImage } from './db';
 
 const FULL_MAX = 2048;
@@ -71,29 +72,25 @@ export function isImageFile(f: { type: string; name?: string }): boolean {
   return /^image\/(png|jpe?g|webp|gif|bmp|avif|heic|heif)$/i.test(f.type) || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(f.name ?? '');
 }
 
+async function exists(id: string): Promise<boolean> {
+  if (mode === 'server') return remote.images.has(id);
+  const d = await db();
+  return !!(await d.getKey('images', id));
+}
+
 /**
- * Сжимает фото (до 2048px по большей стороне + превью 480px) и кладёт в базу.
+ * Сжимает фото (до 2048px по большей стороне + превью 480px) и сохраняет:
+ * в демо — в браузер, в рабочей версии — на сервер. Сжатие идёт до отправки, поэтому загрузка быстрая.
  * Одинаковые файлы хранятся один раз: id — хэш исходника.
  */
 export async function importImage(blob: Blob, name?: string): Promise<string> {
   const id = await hashId(blob);
-  const d = await db();
-  if (await d.getKey('images', id)) return id;
+  if (await exists(id)) return id;
   const img = await decode(blob);
   try {
     const full = await encode(draw(img.src, img.w, img.h, FULL_MAX), 0.86);
     const thumb = await encode(draw(img.src, img.w, img.h, THUMB_MAX), 0.8);
-    const rec: StoredImage = {
-      id,
-      full,
-      thumb,
-      w: img.w,
-      h: img.h,
-      name,
-      bytes: full.size + thumb.size,
-      created: Date.now(),
-    };
-    await d.put('images', rec);
+    await putStoredImage({ id, full, thumb, w: img.w, h: img.h, name, bytes: full.size + thumb.size, created: Date.now() });
     return id;
   } finally {
     img.close();
@@ -101,24 +98,39 @@ export async function importImage(blob: Blob, name?: string): Promise<string> {
 }
 
 export async function putStoredImage(rec: StoredImage) {
+  if (mode === 'server') return remote.images.put(rec);
   const d = await db();
   await d.put('images', rec);
 }
 
+/** Фото целиком (оба размера) — для выгрузки в Excel и резервной копии. */
 export async function getStoredImage(id: string): Promise<StoredImage | undefined> {
+  if (mode === 'server') {
+    const [meta, full, thumb] = await Promise.all([remote.images.meta(id), remote.images.blob(id, 'full'), remote.images.blob(id, 'thumb')]);
+    if (!meta || !full || !thumb) return undefined;
+    return { id, full, thumb, w: meta.w, h: meta.h, name: meta.name, bytes: meta.bytes, created: meta.created };
+  }
   const d = await db();
   return d.get('images', id);
 }
 
-// ─── кэш object URL ──────────────────────────────────────────────────────────
+/** Только размеры и имя — без загрузки самих картинок. */
+export async function getImageMeta(id: string): Promise<{ w: number; h: number; name?: string } | null> {
+  if (mode === 'server') return remote.images.meta(id);
+  const rec = await (await db()).get('images', id);
+  return rec ? { w: rec.w, h: rec.h, name: rec.name } : null;
+}
+
+// ─── адреса картинок ─────────────────────────────────────────────────────────
 
 type Variant = 'thumb' | 'full';
 const urls = new Map<string, string>();
 const pending = new Map<string, Promise<string | null>>();
-const waiters = new Map<string, Set<() => void>>();
 const LIMIT = 900;
 
 export function peekImageUrl(id: string, variant: Variant): string | undefined {
+  // с сервером адрес известен сразу, а кэш браузера сам держит картинки
+  if (mode === 'server') return remote.images.url(id, variant);
   const key = variant + ':' + id;
   const u = urls.get(key);
   if (u) {
@@ -130,6 +142,7 @@ export function peekImageUrl(id: string, variant: Variant): string | undefined {
 }
 
 export function loadImageUrl(id: string, variant: Variant): Promise<string | null> {
+  if (mode === 'server') return Promise.resolve(remote.images.url(id, variant));
   const key = variant + ':' + id;
   const have = urls.get(key);
   if (have) return Promise.resolve(have);
@@ -146,33 +159,21 @@ export function loadImageUrl(id: string, variant: Variant): Promise<string | nul
         URL.revokeObjectURL(oldUrl);
       }
       return url;
-    })().finally(() => {
-      pending.delete(key);
-      const ws = waiters.get(key);
-      waiters.delete(key);
-      ws?.forEach((w) => w());
-    });
+    })().finally(() => pending.delete(key));
     pending.set(key, p);
   }
   return p;
 }
 
-export function onImageReady(id: string, variant: Variant, fn: () => void): () => void {
-  const key = variant + ':' + id;
-  let set = waiters.get(key);
-  if (!set) waiters.set(key, (set = new Set()));
-  set.add(fn);
-  return () => set!.delete(fn);
-}
-
-/** Размер фото без загрузки картинки — для «вписать строку по фото». */
+/** Размер фото без загрузки картинки. */
 export async function imageSize(id: string): Promise<{ w: number; h: number } | null> {
-  const rec = await getStoredImage(id);
-  return rec ? { w: rec.w, h: rec.h } : null;
+  const m = await getImageMeta(id);
+  return m ? { w: m.w, h: m.h } : null;
 }
 
 /** Удаляет фото, на которые больше нет ссылок ни в данных, ни в снимках. */
 export async function collectGarbage(referenced: Set<string>): Promise<{ removed: number; freed: number }> {
+  if (mode === 'server') return remote.images.gc([...referenced]);
   const d = await db();
   const tx = d.transaction('images', 'readwrite');
   let cursor = await tx.store.openCursor();
@@ -191,6 +192,7 @@ export async function collectGarbage(referenced: Set<string>): Promise<{ removed
 }
 
 export async function allImageIds(): Promise<string[]> {
+  if (mode === 'server') return remote.images.list();
   const d = await db();
   return d.getAllKeys('images');
 }

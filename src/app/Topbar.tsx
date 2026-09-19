@@ -1,16 +1,19 @@
-import { Archive, FileDown, FileSpreadsheet, FileUp, Keyboard, Menu as MenuIcon, Plus, Search, Settings2, X } from 'lucide-react';
+import { Archive, Check, FileDown, FileSpreadsheet, FileUp, Keyboard, LogOut, Menu as MenuIcon, Pencil, Plus, Search, Settings2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { BrandMark } from '../ui/icons';
 import { Menu, type MenuItem } from '../ui/Menu';
 import { useUI } from '../ui/state';
-import { ctx, newCard, toast } from './actions';
+import { logout, mode } from '../storage/backend';
+import { commitEdit, ctx, newCard, toast } from './actions';
+import { requireEdit, setEditing } from './editMode';
 import { gridApi } from './gridApi';
-import { store, useStoreVersion } from './instance';
+import { persister, store, useStoreVersion } from './instance';
 
 const I = { size: 16, strokeWidth: 1.75 };
 
 function Title() {
   useStoreVersion();
+  const editing = useUI((s) => s.editing);
   const [draft, setDraft] = useState<string | null>(null);
   const title = store.meta.title;
   return (
@@ -19,7 +22,8 @@ function Title() {
       aria-label="Название базы"
       value={draft ?? title}
       spellCheck={false}
-      onFocus={() => setDraft(title)}
+      readOnly={!editing}
+      onFocus={() => editing && setDraft(title)}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         const v = (draft ?? '').trim();
@@ -27,6 +31,7 @@ function Title() {
         setDraft(null);
       }}
       onKeyDown={(e) => {
+        if (!editing && (e.key.length === 1 || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey) requireEdit();
         if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
         if (e.key === 'Escape') {
           setDraft(null);
@@ -125,6 +130,29 @@ function SearchBox() {
   );
 }
 
+/** Просмотр ⇄ редактирование: база открывается только для просмотра, чтобы её нельзя было случайно испортить */
+function EditToggle() {
+  const editing = useUI((s) => s.editing);
+  return (
+    <button
+      type="button"
+      className={'btn topbar-edit' + (editing ? ' is-on' : '')}
+      aria-pressed={editing}
+      data-tip={editing ? 'Закончить: база снова только для просмотра' : 'Разрешить изменения в таблице и карточках'}
+      onClick={() => {
+        // незаконченный ввод в ячейке сохраняем, а не теряем
+        if (editing && useUI.getState().edit) commitEdit(null);
+        setEditing(!editing);
+        toast(editing ? 'Только просмотр — случайно ничего не изменится' : 'Редактирование включено');
+        gridApi.focus();
+      }}
+    >
+      {editing ? <Check size={16} strokeWidth={2} aria-hidden /> : <Pencil size={15} strokeWidth={1.75} aria-hidden />}
+      <span>{editing ? 'Готово' : 'Редактировать'}</span>
+    </button>
+  );
+}
+
 export function Topbar() {
   const set = useUI((s) => s.set);
   const [menu, setMenu] = useState<HTMLElement | null>(null);
@@ -161,6 +189,13 @@ export function Topbar() {
     { label: 'Резервные копии…', icon: <Archive {...I} />, onSelect: () => set({ dialog: { kind: 'backup' } }) },
     { label: 'Параметры и курсы валют…', icon: <Settings2 {...I} />, onSelect: () => set({ dialog: { kind: 'settings' } }) },
     { label: 'Горячие клавиши', icon: <Keyboard {...I} />, hint: 'F1', onSelect: () => set({ dialog: { kind: 'shortcuts' } }) },
+    ...(mode === 'server'
+      ? (['sep', { label: 'Выйти', icon: <LogOut {...I} />, onSelect: async () => {
+            await persister.flush();
+            await logout();
+            location.reload();
+          } }] as MenuItem[])
+      : []),
   ];
 
   return (
@@ -173,6 +208,7 @@ export function Topbar() {
       <Title />
       <div className="topbar-spacer" />
       <SearchBox />
+      <EditToggle />
       <button type="button" className="btn btn--primary topbar-new" onClick={newCard}>
         <Plus size={16} strokeWidth={2} aria-hidden />
         <span>Новая карточка</span>
