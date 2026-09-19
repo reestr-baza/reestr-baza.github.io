@@ -2660,18 +2660,16 @@ select.input {
   white-space: nowrap;
 }
 /* фото из строки таблицы: подпись-этикетка о происхождении */
-.blk-origin {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 1;
-  padding: 2px 7px;
-  border-radius: var(--r-1);
-  background: var(--ink);
-  color: var(--tape);
-  font-size: var(--t-11);
-  font-weight: 600;
-  pointer-events: none;
+/* кнопка «Фото из строки»: миниатюра того фото, которое добавится */
+.row-photo-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--line-heavy);
+}
+.row-photo-btn:disabled .row-photo-thumb {
+  opacity: 0.5;
 }
 .blk-tools-note {
   padding: 0 8px 0 4px;

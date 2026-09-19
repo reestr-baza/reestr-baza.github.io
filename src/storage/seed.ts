@@ -106,6 +106,7 @@ export async function buildDemo(baseUrl: string): Promise<{ meta: WorkbookMeta; 
     const row: Row = { id, cells };
     if (i === 0 && images.indigo) {
       row.card = [
+        { img: images.indigo },
         { img: images.lightwash, text: 'Та же модель — светлая варка', st: { ha: 'center' } },
         { text: 'Ткань: 100% хлопок, 13 oz.\nПосадка высокая, штанина от бедра.', st: { va: 'top' } },
         { text: 'Размерная сетка', st: { va: 'top', b: true, bg: '#fff6c7' } },
@@ -114,12 +115,11 @@ export async function buildDemo(baseUrl: string): Promise<{ meta: WorkbookMeta; 
         {},
         { text: 'Упаковка: пакет + бирка', st: { va: 'bottom', ha: 'right', i: true } },
       ];
-
     }
     // ещё два примера заполненных карточек: крупное главное фото и описание во всю ширину
-    if (i === 1 && images.black && images.darkblue) {
-      row.cardLinked = { [cPhoto.id]: { cs: 2, rs: 2 } };
+    if (i === 1 && cells[cPhoto.id]?.img && images.black && images.darkblue) {
       row.card = [
+        { img: cells[cPhoto.id].img, cs: 2, rs: 2 },
         { text: 'Цвет: графит\nПосадка средняя, прямая штанина от бедра', st: { va: 'top' } },
         { text: 'В наличии: 26, 27, 28, 29\nПод заказ: 25, 30, 31', st: { va: 'top', b: true } },
         { img: images.black, text: 'Этот же крой — чёрный', st: { ha: 'center' } },
@@ -127,8 +127,9 @@ export async function buildDemo(baseUrl: string): Promise<{ meta: WorkbookMeta; 
         { text: 'Упаковка: пакет + бирка\nВес: 0,62 кг', st: { va: 'bottom', i: true } },
       ];
     }
-    if (i === 2 && images.ecru && images.olive) {
+    if (i === 2 && cells[cPhoto.id]?.img && images.ecru && images.olive) {
       row.card = [
+        { img: cells[cPhoto.id].img, text: 'песок', st: { ha: 'center' } },
         { img: images.ecru, text: 'экрю', st: { ha: 'center' } },
         { img: images.olive, text: 'олива', st: { ha: 'center' } },
         {

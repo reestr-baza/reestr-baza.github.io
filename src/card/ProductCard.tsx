@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Grid2x2,
+  ImageDown,
   ImageMinus,
   ImagePlus,
   Italic,
@@ -25,7 +26,7 @@ import { ctx, setSelection, toast } from '../app/actions';
 import { requireEdit, setEditing } from '../app/editMode';
 import { gridApi } from '../app/gridApi';
 import { store, useStoreVersion } from '../app/instance';
-import type { BlockSpan, CardBlock, CellStyle, Column, Row, Sheet } from '../model/types';
+import type { BlockSpan, CardBlock, CellStyle, Row, Sheet } from '../model/types';
 import { importImage, isImageFile } from '../storage/images';
 import { ColorPicker } from '../ui/ColorPicker';
 import { VAlignBottom, VAlignMiddle, VAlignTop } from '../ui/icons';
@@ -407,54 +408,10 @@ function BlockToolbar({ block, onChange }: { block: CardBlock; onChange: (b: Car
   );
 }
 
-// ─── фото из строки таблицы ──────────────────────────────────────────────────
-
-function LinkedBlock({ img, colName, index, span, active, editable, onActivate, onOpen }: { img: string; colName: string; index: number; span: BlockSpan; active: boolean; editable: boolean; onActivate: () => void; onOpen: () => void }) {
-  const wasActive = useRef(false);
-  return (
-    <div
-      className={'blk blk--linked has-img' + (active ? ' is-active' : '') + (spanStyle(span) ? ' blk--span' : '')}
-      style={spanStyle(span)}
-      data-block={index}
-      role="group"
-      aria-label={`Фото из таблицы, столбец «${colName}»`}
-      onPointerDown={() => {
-        wasActive.current = active;
-        onActivate();
-      }}
-    >
-      <BlockImage id={img} onOpen={() => (!editable || wasActive.current) && onOpen()} />
-      <span className="blk-origin">из таблицы · {colName}</span>
-    </div>
-  );
-}
-
-function LinkedToolbar({ colName, span, onSpan, onReplace, onRemove }: { colName: string; span: BlockSpan; onSpan: (s: BlockSpan) => void; onReplace: (f: File) => void; onRemove: () => void }) {
-  const file = useRef<HTMLInputElement>(null);
-  return (
-    <div className="blk-tools" role="toolbar" aria-label="Фото из таблицы">
-      <button type="button" className="tb" aria-label="Заменить фото в таблице" data-tip="Заменить фото в таблице" onClick={() => file.current?.click()}>
-        <ImagePlus {...I} />
-      </button>
-      <button type="button" className="tb" aria-label="Убрать фото из строки таблицы" data-tip="Убрать фото из строки таблицы" onClick={onRemove}>
-        <ImageMinus {...I} />
-      </button>
-      <span className="tb-sep" aria-hidden />
-      <SpanPicker value={span} onPick={onSpan} />
-      <span className="blk-tools-note">Это фото из столбца «{colName}» — меняется вместе с таблицей</span>
-      <input
-        ref={file}
-        type="file"
-        accept="image/*"
-        hidden
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = '';
-          if (f) onReplace(f);
-        }}
-      />
-    </div>
-  );
+/** Миниатюра фото строки на кнопке — сразу видно, какое фото добавится. */
+function RowPhotoThumb({ id }: { id: string }) {
+  const url = useImageUrl(id, 'thumb');
+  return url ? <img className="row-photo-thumb" src={url} alt="" /> : <ImageDown size={15} strokeWidth={1.75} aria-hidden />;
 }
 
 // ─── печать этикетки ─────────────────────────────────────────────────────────
@@ -536,19 +493,15 @@ export function ProductCard({ rowId }: { rowId: string }) {
   const sku = keyC >= 0 ? store.display(sheet, phys, keyC).text : '';
   const title = titleOf(sheet, phys, keyC) || 'Без названия';
   const blocks: CardBlock[] = row.card ?? [];
-  // фото из строки таблицы (столбец «Фото» и другие с картинками) — первые клетки сетки.
-  // Это та же картинка, что в таблице, не копия: заменили здесь — поменялось в таблице, и наоборот
-  const linked = sheet.columns
-    .map((col) => ({ col, img: row.cells[col.id]?.img }))
-    .filter((x): x is { col: Column; img: string } => !!x.img);
-  const L = linked.length;
-  const linkedSpan = (colId: string): BlockSpan => row.cardLinked?.[colId] ?? {};
   // блоки бывают больше одной клетки: считаем занятую площадь, остаток ряда заполняем пустыми клетками
-  const used = linked.reduce((n, x) => n + areaOf(linkedSpan(x.col.id)), 0) + blocks.reduce((n, b) => n + areaOf(b), 0);
+  const used = blocks.reduce((n, b) => n + areaOf(b), 0);
   const rowsOfBlocks = Math.max(MIN_BLOCK_ROWS, Math.ceil(used / BLOCKS_PER_ROW));
-  // собственные блоки карточки идут после фото из таблицы
   const slots: CardBlock[] = [...blocks, ...Array.from({ length: rowsOfBlocks * BLOCKS_PER_ROW - used }, () => ({}))];
-  const photos = L + slots.filter((b) => b.img).length;
+  const photos = slots.filter((b) => b.img).length;
+  // фото из строки таблицы кладутся в карточку кнопкой — как копия: карточка и таблица дальше живут отдельно
+  const rowPhotos = [...new Set(sheet.columns.map((col) => row.cells[col.id]?.img).filter((x): x is string => !!x))];
+  const inCard = new Set(slots.map((b) => b.img));
+  const missingRowPhotos = rowPhotos.filter((id) => !inCard.has(id));
 
   // цена для этикетки: первый столбец в рублях
   const priceC = sheet.columns.findIndex((c, i) => {
@@ -598,35 +551,39 @@ export function ProductCard({ rowId }: { rowId: string }) {
       setUploading(null);
     }
     if (!ids.length) return;
-    let rest = ids;
-    if (startAt !== undefined && startAt < L) {
-      // перетащили на фото из таблицы — меняем его в самой таблице
-      const col = linked[startAt].col;
-      store.transact('Фото в таблице', () => store.patchCell(sheet, rowId, col.id, (c) => ({ ...c, img: ids[0] })));
-      rest = ids.slice(1);
-      if (!rest.length) {
-        toast(`Фото в столбце «${col.name}» заменено`);
+    placeImages(ids, startAt, true);
+    toast(ids.length > 1 ? `Добавлено фото: ${ids.length}` : 'Фото добавлено');
+  };
+
+  /** Разложить фото по клеткам: первое — в выбранную клетку (или первую свободную), остальные — в следующие свободные. */
+  const placeImages = (ids: string[], startAt: number | undefined, replaceStart: boolean) => {
+    const next = [...slots];
+    const start = startAt !== undefined && (replaceStart || !next[startAt]?.img) ? startAt : undefined;
+    ids.forEach((id, n) => {
+      if (n === 0 && start !== undefined) {
+        next[start] = { ...next[start], img: id };
         return;
       }
-    }
-    const own = startAt !== undefined && startAt >= L ? startAt - L : undefined;
-    const next = [...slots];
-    for (let n = 0; n < rest.length; n++) {
-      const id = rest[n];
-      if (n === 0 && own !== undefined) {
-        next[own] = { ...next[own], img: id };
-        continue;
-      }
-      let k = next.findIndex((b, i) => !b.img && i > (own ?? -1));
+      let k = next.findIndex((b, i) => !b.img && i > (start ?? -1));
       if (k < 0) k = next.findIndex((b) => !b.img);
       if (k < 0) {
         for (let add = 0; add < BLOCKS_PER_ROW; add++) next.push({});
         k = next.findIndex((b) => !b.img);
       }
       next[k] = { ...next[k], img: id };
+    });
+    saveSlots(next, ids.length > 1 ? 'Фото в карточку' : 'Фото в блоке');
+  };
+
+  /** Фото из строки таблицы — копией в карточку. */
+  const addRowPhotos = () => {
+    if (!requireEdit()) return;
+    if (!missingRowPhotos.length) {
+      toast('Фото из строки уже есть в карточке');
+      return;
     }
-    saveSlots(next, rest.length > 1 ? 'Фото в карточку' : 'Фото в блоке');
-    toast(ids.length > 1 ? `Добавлено фото: ${ids.length}` : 'Фото добавлено');
+    placeImages(missingRowPhotos, activeBlock ?? undefined, false);
+    toast(missingRowPhotos.length > 1 ? `Добавлено фото из строки: ${missingRowPhotos.length}` : 'Фото из строки добавлено в карточку');
   };
 
   const addBlockRow = () => {
@@ -659,7 +616,7 @@ export function ProductCard({ rowId }: { rowId: string }) {
   };
 
   const openImage = (id: string) => {
-    const list = [...linked.map((x) => x.img), ...slots.map((b) => b.img).filter((x): x is string => !!x)];
+    const list = slots.map((b) => b.img).filter((x): x is string => !!x);
     set({ lightbox: { imageId: id, caption: `${sku} · ${title}`, list } });
   };
 
@@ -731,10 +688,24 @@ export function ProductCard({ rowId }: { rowId: string }) {
 
           <div className="blk-bar">
             {editable ? (
-              <button type="button" className="btn btn--sm" onClick={() => filesInput.current?.click()} disabled={!!uploading}>
-                <ImagePlus size={15} strokeWidth={1.75} aria-hidden />
-                {uploading ?? 'Добавить фото'}
-              </button>
+              <>
+                <button type="button" className="btn btn--sm" onClick={() => filesInput.current?.click()} disabled={!!uploading}>
+                  <ImagePlus size={15} strokeWidth={1.75} aria-hidden />
+                  {uploading ?? 'Добавить фото'}
+                </button>
+                {rowPhotos.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn--sm row-photo-btn"
+                    onClick={addRowPhotos}
+                    disabled={!missingRowPhotos.length}
+                    title={missingRowPhotos.length ? 'Положить в карточку фото из этой строки таблицы' : 'Фото из строки уже есть в карточке'}
+                  >
+                    <RowPhotoThumb id={rowPhotos[0]} />
+                    Фото из строки
+                  </button>
+                )}
+              </>
             ) : (
               <button type="button" className="btn btn--sm" onClick={() => setEditing(true)}>
                 <Pencil size={14} strokeWidth={1.75} aria-hidden />
@@ -755,26 +726,8 @@ export function ProductCard({ rowId }: { rowId: string }) {
             />
             {!editable ? (
               <span className="blk-bar-hint">Режим просмотра: фото и текст не изменятся случайно. Чтобы заполнить карточку, нажмите «Редактировать».</span>
-            ) : activeBlock !== null && activeBlock < L ? (
-              <LinkedToolbar
-                colName={linked[activeBlock].col.name}
-                span={linkedSpan(linked[activeBlock].col.id)}
-                onSpan={(sp) => {
-                  const colId = linked[activeBlock].col.id;
-                  const next = { ...row.cardLinked };
-                  if (sp.cs || sp.rs) next[colId] = sp;
-                  else delete next[colId];
-                  store.transact('Размер блока', () => store.patchRow(sheet, rowId, { cardLinked: Object.keys(next).length ? next : undefined }));
-                }}
-                onReplace={(f) => void addPhotos([f], activeBlock)}
-                onRemove={() => {
-                  const col = linked[activeBlock].col;
-                  store.transact('Убрать фото', () => store.patchCell(sheet, rowId, col.id, (c) => ({ ...c, img: undefined })));
-                  setActiveBlock(null);
-                }}
-              />
-            ) : activeBlock !== null ? (
-              <BlockToolbar block={slots[activeBlock - L]} onChange={(b, l) => saveBlock(activeBlock - L, b, l)} />
+            ) : activeBlock !== null && slots[activeBlock] ? (
+              <BlockToolbar block={slots[activeBlock]} onChange={(b, l) => saveBlock(activeBlock, b, l)} />
             ) : (
               <span className="blk-bar-hint">Нажмите на клетку, чтобы написать текст, или перетащите на неё фото. Выберите блок — появятся размер, выравнивание и цвет.</span>
             )}
@@ -803,17 +756,14 @@ export function ProductCard({ rowId }: { rowId: string }) {
             }}
           >
             <div className="blk-grid" style={{ '--rows': rowsOfBlocks } as React.CSSProperties}>
-              {linked.map((x, i) => (
-                <LinkedBlock key={'t' + x.col.id} img={x.img} colName={x.col.name} index={i} span={linkedSpan(x.col.id)} active={activeBlock === i} editable={editable} onActivate={() => setActiveBlock(i)} onOpen={() => openImage(x.img)} />
-              ))}
               {slots.map((b, i) => (
                 <Block
                   key={i}
                   block={b}
-                  index={i + L}
-                  active={activeBlock === i + L}
+                  index={i}
+                  active={activeBlock === i}
                   editable={editable}
-                  onActivate={() => setActiveBlock(i + L)}
+                  onActivate={() => setActiveBlock(i)}
                   onChange={(nb, l) => saveBlock(i, nb, l)}
                   onOpenImage={openImage}
                 />

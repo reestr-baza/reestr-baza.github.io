@@ -65,8 +65,6 @@ export interface Row {
   h?: number;
   hidden?: boolean;
   card?: CardBlock[];
-  /** Размер блоков с фото из таблицы (по столбцу) */
-  cardLinked?: Record<ColId, BlockSpan>;
 }
 
 export interface Column {
