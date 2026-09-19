@@ -1,0 +1,196 @@
+import { db, type StoredImage } from './db';
+
+const FULL_MAX = 2048;
+const THUMB_MAX = 480;
+
+let webpSupported: boolean | null = null;
+
+async function encode(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  if (webpSupported !== false) {
+    const b = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/webp', quality));
+    if (b && b.type === 'image/webp') {
+      webpSupported = true;
+      return b;
+    }
+    webpSupported = false;
+  }
+  // Safari без WebP-кодировщика: JPEG на белом фоне
+  const flat = document.createElement('canvas');
+  flat.width = canvas.width;
+  flat.height = canvas.height;
+  const ctx = flat.getContext('2d')!;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, flat.width, flat.height);
+  ctx.drawImage(canvas, 0, 0);
+  const b = await new Promise<Blob | null>((res) => flat.toBlob(res, 'image/jpeg', quality));
+  if (!b) throw new Error('Не удалось сжать изображение');
+  return b;
+}
+
+function draw(src: CanvasImageSource, w: number, h: number, max: number): HTMLCanvasElement {
+  const scale = Math.min(1, max / Math.max(w, h));
+  const cw = Math.max(1, Math.round(w * scale));
+  const ch = Math.max(1, Math.round(h * scale));
+  const c = document.createElement('canvas');
+  c.width = cw;
+  c.height = ch;
+  const ctx = c.getContext('2d')!;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, cw, ch);
+  return c;
+}
+
+async function hashId(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-1', buf);
+  return Array.from(new Uint8Array(digest).slice(0, 10), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function decode(blob: Blob): Promise<{ src: CanvasImageSource; w: number; h: number; close(): void }> {
+  if ('createImageBitmap' in window) {
+    try {
+      const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+      return { src: bmp, w: bmp.width, h: bmp.height, close: () => bmp.close() };
+    } catch {
+      /* ниже — запасной путь через <img> */
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await img.decode();
+    return { src: img, w: img.naturalWidth, h: img.naturalHeight, close: () => {} };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+export function isImageFile(f: { type: string; name?: string }): boolean {
+  return /^image\/(png|jpe?g|webp|gif|bmp|avif|heic|heif)$/i.test(f.type) || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(f.name ?? '');
+}
+
+/**
+ * Сжимает фото (до 2048px по большей стороне + превью 480px) и кладёт в базу.
+ * Одинаковые файлы хранятся один раз: id — хэш исходника.
+ */
+export async function importImage(blob: Blob, name?: string): Promise<string> {
+  const id = await hashId(blob);
+  const d = await db();
+  if (await d.getKey('images', id)) return id;
+  const img = await decode(blob);
+  try {
+    const full = await encode(draw(img.src, img.w, img.h, FULL_MAX), 0.86);
+    const thumb = await encode(draw(img.src, img.w, img.h, THUMB_MAX), 0.8);
+    const rec: StoredImage = {
+      id,
+      full,
+      thumb,
+      w: img.w,
+      h: img.h,
+      name,
+      bytes: full.size + thumb.size,
+      created: Date.now(),
+    };
+    await d.put('images', rec);
+    return id;
+  } finally {
+    img.close();
+  }
+}
+
+export async function putStoredImage(rec: StoredImage) {
+  const d = await db();
+  await d.put('images', rec);
+}
+
+export async function getStoredImage(id: string): Promise<StoredImage | undefined> {
+  const d = await db();
+  return d.get('images', id);
+}
+
+// ─── кэш object URL ──────────────────────────────────────────────────────────
+
+type Variant = 'thumb' | 'full';
+const urls = new Map<string, string>();
+const pending = new Map<string, Promise<string | null>>();
+const waiters = new Map<string, Set<() => void>>();
+const LIMIT = 900;
+
+export function peekImageUrl(id: string, variant: Variant): string | undefined {
+  const key = variant + ':' + id;
+  const u = urls.get(key);
+  if (u) {
+    // обновляем «свежесть» для LRU
+    urls.delete(key);
+    urls.set(key, u);
+  }
+  return u;
+}
+
+export function loadImageUrl(id: string, variant: Variant): Promise<string | null> {
+  const key = variant + ':' + id;
+  const have = urls.get(key);
+  if (have) return Promise.resolve(have);
+  let p = pending.get(key);
+  if (!p) {
+    p = (async () => {
+      const rec = await getStoredImage(id);
+      if (!rec) return null;
+      const url = URL.createObjectURL(variant === 'thumb' ? rec.thumb : rec.full);
+      urls.set(key, url);
+      while (urls.size > LIMIT) {
+        const [oldKey, oldUrl] = urls.entries().next().value!;
+        urls.delete(oldKey);
+        URL.revokeObjectURL(oldUrl);
+      }
+      return url;
+    })().finally(() => {
+      pending.delete(key);
+      const ws = waiters.get(key);
+      waiters.delete(key);
+      ws?.forEach((w) => w());
+    });
+    pending.set(key, p);
+  }
+  return p;
+}
+
+export function onImageReady(id: string, variant: Variant, fn: () => void): () => void {
+  const key = variant + ':' + id;
+  let set = waiters.get(key);
+  if (!set) waiters.set(key, (set = new Set()));
+  set.add(fn);
+  return () => set!.delete(fn);
+}
+
+/** Размер фото без загрузки картинки — для «вписать строку по фото». */
+export async function imageSize(id: string): Promise<{ w: number; h: number } | null> {
+  const rec = await getStoredImage(id);
+  return rec ? { w: rec.w, h: rec.h } : null;
+}
+
+/** Удаляет фото, на которые больше нет ссылок ни в данных, ни в снимках. */
+export async function collectGarbage(referenced: Set<string>): Promise<{ removed: number; freed: number }> {
+  const d = await db();
+  const tx = d.transaction('images', 'readwrite');
+  let cursor = await tx.store.openCursor();
+  let removed = 0;
+  let freed = 0;
+  while (cursor) {
+    if (!referenced.has(cursor.key)) {
+      freed += cursor.value.bytes;
+      removed++;
+      await cursor.delete();
+    }
+    cursor = await cursor.continue();
+  }
+  await tx.done;
+  return { removed, freed };
+}
+
+export async function allImageIds(): Promise<string[]> {
+  const d = await db();
+  return d.getAllKeys('images');
+}

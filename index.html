@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="Реестр — база товаров в браузере: таблица как в Excel с фото в ячейках, формулами, фильтрами и карточками товаров." />
+    <meta name="theme-color" content="#ebede9" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>Реестр — база товаров</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #ebede9;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font: 14px/1.5 system-ui, sans-serif;
+        color: #4b5057;
+      }
+      #boot p {
+        max-width: 42ch;
+        padding: 0 16px;
+        text-align: center;
+      }
+      .boot-mark {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot" aria-live="polite">
+      <div class="boot-mark">
+        <svg width="28" height="28" viewBox="0 0 22 22" aria-hidden="true">
+          <rect width="22" height="22" rx="3" fill="#ffd23f" />
+          <g fill="#16181b"><rect x="4" y="5" width="2" height="12" /><rect x="7.5" y="5" width="1" height="12" /><rect x="10" y="5" width="3" height="12" /><rect x="14.5" y="5" width="1" height="12" /><rect x="16.5" y="5" width="1.5" height="12" /></g>
+        </svg>
+        <span>Открываем базу…</span>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

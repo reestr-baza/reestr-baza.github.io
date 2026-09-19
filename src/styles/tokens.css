@@ -1,0 +1,66 @@
+/*
+  «Реестр» — визуальный язык складской маркировки.
+  Холодный бетонно-серый каркас, белый лист данных, чёрная краска,
+  жёлтый стеллажной этикетки — единственный акцент.
+*/
+:root {
+  color-scheme: light;
+
+  /* нейтральные: каркас → лист */
+  --chrome: #ebede9;
+  --chrome-hover: #e1e4df;
+  --chrome-press: #d5d9d3;
+  --sheet: #ffffff;
+  --head: #f4f5f2;
+  --head-hover: #eceeea;
+  --line: #e2e4df;
+  --line-strong: #cdd1ca;
+  --line-heavy: #a9afa7;
+
+  /* краска */
+  --ink: #16181b;
+  --ink-2: #4b5057;
+  --ink-3: #737982;
+  --ink-4: #a2a8af;
+  --on-ink: #ffffff;
+
+  /* этикетка */
+  --tape: #ffd23f;
+  --tape-hover: #f7c624;
+  --tape-press: #e9b500;
+  --tape-edge: #c99a00;
+  --tape-wash: #fff3c4;
+
+  /* роли */
+  --link: #1d5fc4;
+  --danger: #b42318;
+  --danger-wash: #fdeceb;
+  --range-wash: rgba(22, 24, 27, 0.055);
+  --focus: #16181b;
+
+  /* шрифты */
+  --font-ui: 'Golos Text Variable', 'Golos Text', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Martian Mono Variable', 'Martian Mono', ui-monospace, 'Cascadia Mono', monospace;
+
+  /* шкала: 11 подписи столбцов · 12 служебный · 13 данные · 14 элементы · 16 заголовки · 22 карточка */
+  --t-11: 0.6875rem;
+  --t-12: 0.75rem;
+  --t-13: 0.8125rem;
+  --t-14: 0.875rem;
+  --t-16: 1rem;
+  --t-22: 1.375rem;
+
+  --r-1: 3px;
+  --r-2: 5px;
+  --r-3: 8px;
+
+  --sh-pop: 0 1px 2px rgba(16, 18, 20, 0.08), 0 8px 24px -6px rgba(16, 18, 20, 0.2);
+  --sh-dialog: 0 2px 4px rgba(16, 18, 20, 0.06), 0 28px 56px -16px rgba(16, 18, 20, 0.34);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* сетка */
+  --rh-w: 56px;
+  --hd-h: 34px;
+}
