@@ -156,6 +156,36 @@ export async function importCsv(file: File, opts: ImportOptions): Promise<Import
 
 // ─── экспорт ─────────────────────────────────────────────────────────────────
 
+/** Служебные листы выгрузки: при загрузке обратно они не становятся листами базы. */
+export const PARAMS_SHEET = 'Параметры';
+/** Цвет ссылок в выгрузке */
+export const LINK_COLOR = '#1d5fc4';
+export const PARAMS_HEAD = ['Имя', 'Значение', 'Пояснение'];
+export const CARDS_SHEET = 'Карточки';
+export const CARDS_HEAD = ['Лист', 'Строка', 'Артикул', 'Блок', 'Фото', 'Текст', 'Ширина', 'Высота', 'Оформление'];
+
+/** Имя листа, каким его сохранит Excel: до 31 знака, без \ / ? * [ ] : */
+export const excelSheetName = (name: string) => name.slice(0, 31).replace(/[\\/?*[\]:]/g, ' ');
+
+/**
+ * Фото в ячейку Excel: вписать с отступом 3px, привязка «перемещать и изменять вместе с ячейками».
+ * Картинку добавляем в книгу для каждой ячейки заново: ExcelJS путает ссылки, если одну картинку
+ * поставить в несколько мест (во второй ячейке оказывается чужое фото).
+ */
+function placeImage(ws: ExcelJS.Worksheet, imageId: number, img: { w: number; h: number }, row: number, col: number, colW: number, rowH: number) {
+  const k = Math.min((colW - 6) / img.w, (rowH - 6) / img.h);
+  const w = img.w * k;
+  const h = img.h * k;
+  const offX = (colW - w) / 2;
+  const offY = (rowH - h) / 2;
+  const EMU = 9525; // в одном пикселе
+  ws.addImage(imageId, {
+    tl: { nativeCol: col, nativeColOff: Math.round(offX * EMU), nativeRow: row, nativeRowOff: Math.round(offY * EMU) },
+    br: { nativeCol: col, nativeColOff: Math.round((offX + w) * EMU), nativeRow: row, nativeRowOff: Math.round((offY + h) * EMU) },
+    editAs: 'twoCell',
+  } as never);
+}
+
 /** WebP в Excel не поддерживается — перекодируем в JPEG. */
 async function imageForExcel(id: string, cache: Map<string, { buffer: ArrayBuffer; w: number; h: number } | null>) {
   if (cache.has(id)) return cache.get(id)!;
@@ -183,12 +213,13 @@ export async function exportXlsx(store: Store, scope: 'sheet' | 'all') {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Реестр';
   wb.created = new Date();
+  // название базы — чтобы при загрузке файла обратно оно вернулось, а не стало именем файла
+  wb.title = store.meta.title;
   const sheets = scope === 'all' ? store.sheetList() : [store.activeSheet];
   const imgCache = new Map<string, { buffer: ArrayBuffer; w: number; h: number } | null>();
-  const imageIds = new Map<string, number>();
 
   for (const sheet of sheets) {
-    const ws = wb.addWorksheet(sheet.name.slice(0, 31).replace(/[\\/?*[\]:]/g, ' '), {
+    const ws = wb.addWorksheet(excelSheetName(sheet.name), {
       views: [{ state: 'frozen', xSplit: sheet.frozen, ySplit: 1 }],
     });
     ws.columns = sheet.columns.map((c) => ({ width: Math.max(4, (c.w - 5) / 7), hidden: !!c.hidden }));
@@ -222,7 +253,7 @@ export async function exportXlsx(store: Store, scope: 'sheet' | 'all') {
           xc.value = { formula: toExcelFormula(formula, 1), result: result as never } as ExcelJS.CellFormulaValue;
         } else if (cell?.href && cell.v !== undefined) {
           xc.value = { text: String(cell.v), hyperlink: cell.href };
-          xc.font = { color: { argb: 'FF1D5FC4' }, underline: true };
+          xc.font = { color: { argb: hexToArgb(LINK_COLOR) } };
         } else if (cell?.v !== undefined) {
           xc.value = st.nf?.k === 'date' && typeof cell.v === 'number' ? new Date(Date.UTC(1899, 11, 30) + cell.v * 86400000) : cell.v;
         }
@@ -234,29 +265,12 @@ export async function exportXlsx(store: Store, scope: 'sheet' | 'all') {
           xc.alignment = { horizontal: st.ha, vertical: st.va === 'middle' || !st.va ? 'middle' : st.va, wrapText: st.wrap };
         const fmt = numFmtToExcel(st.nf);
         if (fmt) xc.numFmt = fmt;
+        if (cell?.note) xc.note = cell.note;
 
         if (cell?.img) {
           const img = await imageForExcel(cell.img, imgCache);
           if (!img) continue;
-          let imageId = imageIds.get(cell.img);
-          if (imageId === undefined) {
-            imageId = wb.addImage({ buffer: img.buffer as never, extension: 'jpeg' });
-            imageIds.set(cell.img, imageId);
-          }
-          // вписываем фото в ячейку с отступом 3px и привязкой «перемещать и изменять вместе с ячейками»
-          const cw = col.w - 6;
-          const ch = hPx - 6;
-          const k = Math.min(cw / img.w, ch / img.h);
-          const w = img.w * k;
-          const h = img.h * k;
-          const offX = (col.w - w) / 2;
-          const offY = (hPx - h) / 2;
-          const EMU = 9525; // в одном пикселе
-          ws.addImage(imageId, {
-            tl: { nativeCol: c, nativeColOff: Math.round(offX * EMU), nativeRow: i + 1, nativeRowOff: Math.round(offY * EMU) },
-            br: { nativeCol: c, nativeColOff: Math.round((offX + w) * EMU), nativeRow: i + 1, nativeRowOff: Math.round((offY + h) * EMU) },
-            editAs: 'twoCell',
-          } as never);
+          placeImage(ws, wb.addImage({ buffer: img.buffer as never, extension: 'jpeg' }), img, i + 1, c, col.w, hPx);
         }
       }
     }
@@ -272,14 +286,43 @@ export async function exportXlsx(store: Store, scope: 'sheet' | 'all') {
     }
   }
 
+  const cardRows = sheets.flatMap((sheet) =>
+    sheet.rowOrder.map((id, i) => ({ sheet, row: sheet.rows.get(id), i })).filter((x) => x.row?.card?.length),
+  );
+  if (cardRows.length) {
+    const cs = wb.addWorksheet(CARDS_SHEET, { views: [{ state: 'frozen', ySplit: 1 }] });
+    cs.columns = [{ width: 18 }, { width: 9 }, { width: 14 }, { width: 7 }, { width: 22 }, { width: 50 }, { width: 9 }, { width: 9 }, { width: 30 }];
+    const head = cs.getRow(1);
+    head.values = CARDS_HEAD;
+    head.font = { bold: true };
+    let r = 2;
+    for (const { sheet, row, i } of cardRows) {
+      const keyC = sheet.keyColId ? store.colIndexOf(sheet, sheet.keyColId) : 0;
+      const sku = store.display(sheet, i, Math.max(0, keyC)).text;
+      for (const [b, block] of row!.card!.entries()) {
+        const xr = cs.getRow(r);
+        xr.values = [excelSheetName(sheet.name), i + 1, sku, b + 1, null, block.text ?? null, block.cs ?? 1, block.rs ?? 1, block.st ? JSON.stringify(block.st) : null];
+        xr.getCell(6).alignment = { wrapText: true, vertical: 'top' };
+        if (block.img) {
+          const img = await imageForExcel(block.img, imgCache);
+          if (img) {
+            xr.height = 90;
+            placeImage(cs, wb.addImage({ buffer: img.buffer as never, extension: 'jpeg' }), img, r - 1, 4, 22 * 7 + 5, 120);
+          }
+        }
+        r++;
+      }
+    }
+  }
+
   if (store.meta.names.length) {
-    const ps = wb.addWorksheet('Параметры');
+    const ps = wb.addWorksheet(PARAMS_SHEET);
     ps.columns = [{ width: 28 }, { width: 16 }, { width: 40 }];
-    ps.getRow(1).values = ['Имя', 'Значение', 'Пояснение'];
+    ps.getRow(1).values = PARAMS_HEAD;
     ps.getRow(1).font = { bold: true };
     store.meta.names.forEach((n, i) => {
       ps.getRow(i + 2).values = [n.name, n.value, n.note ?? ''];
-      wb.definedNames.add(`'Параметры'!$B$${i + 2}`, n.name);
+      wb.definedNames.add(`'${PARAMS_SHEET}'!$B$${i + 2}`, n.name);
     });
   }
 

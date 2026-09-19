@@ -6,9 +6,10 @@ import { dateToSerial } from '../formula/functions';
 import { adjustFormula, listRefs, mapRefs, shiftFormula } from '../formula/refs';
 import { uid } from '../lib/ids';
 import { parseInput } from '../model/format';
-import { DEFAULT_COL_WIDTH, type Cell, type CellStyle, type Column, type Merge, type NamedValue, type Row, type RowId, type Sheet } from '../model/types';
+import { isEmptyCell } from '../model/store';
+import { DEFAULT_COL_WIDTH, type CardBlock, type Cell, type CellStyle, type Column, type Merge, type NamedValue, type Row, type RowId, type Sheet } from '../model/types';
 import { imageSize, importImage } from './images';
-import { argbToHex, numFmtFromExcel } from './xlsx';
+import { argbToHex, CARDS_HEAD, CARDS_SHEET, LINK_COLOR, numFmtFromExcel, PARAMS_HEAD, PARAMS_SHEET } from './xlsx';
 
 export interface ImportOptions {
   /** Сколько строк сверху — заголовок. 'auto' — по закреплённым строкам файла. */
@@ -23,6 +24,8 @@ export interface ImportResult {
   warnings: string[];
   /** Параметры из шапки (курс, доставка…), на которые ссылались формулы */
   names: NamedValue[];
+  /** Название базы, если файл выгружен из «Реестра» */
+  title?: string;
 }
 
 type Anchor = { nativeRow?: number; row: number; nativeCol?: number; col: number };
@@ -88,12 +91,126 @@ function cellFromExcel(cell: ExcelJS.Cell, convert: (excelFormula: string) => st
       const text = o.text as unknown;
       out.v = typeof text === 'string' ? text : richToText(text) || String(o.hyperlink);
       out.href = String(o.hyperlink);
+      // синий цвет мы ставим ссылкам при выгрузке, чтобы в Excel они выглядели ссылками; в базе это не оформление ячейки
+      if (out.st?.fg === LINK_COLOR) {
+        delete out.st.fg;
+        if (!Object.keys(out.st).length) delete out.st;
+      }
     } else if ('error' in o) {
       out.v = String(o.error);
     } else if ('text' in o) {
       out.v = String(o.text);
     }
   }
+  return out;
+}
+
+/**
+ * Оформление, общее для столбца, становится оформлением столбца (его получат и новые строки),
+ * в ячейках остаётся только отличие. Свойство переносится в столбец, если оно задано у всех ячеек
+ * столбца и у большинства совпадает — ячейки с другим значением сохраняют своё.
+ */
+function promoteColumnStyles(columns: Column[], rows: Map<RowId, Row>, order: RowId[]) {
+  for (const col of columns) {
+    const cells = order.map((id) => rows.get(id)!.cells[col.id]).filter((c): c is Cell => !!c);
+    if (cells.length < Math.max(3, order.length * 0.95)) continue;
+    const common: CellStyle = {};
+    const keys = new Set(cells.flatMap((c) => Object.keys(c.st ?? {}))) as Set<keyof CellStyle>;
+    for (const k of keys) {
+      const votes = new Map<string, number>();
+      let everywhere = true;
+      for (const c of cells) {
+        const v = c.st?.[k];
+        if (v === undefined) {
+          everywhere = false;
+          break;
+        }
+        const key = JSON.stringify(v);
+        votes.set(key, (votes.get(key) ?? 0) + 1);
+      }
+      if (!everywhere) continue;
+      const [top, n] = [...votes].sort((a, b) => b[1] - a[1])[0];
+      if (n * 2 > cells.length) (common as Record<string, unknown>)[k] = JSON.parse(top);
+    }
+    if (!Object.keys(common).length) continue;
+    col.st = { ...col.st, ...common };
+    for (const id of order) {
+      const row = rows.get(id)!;
+      const cell = row.cells[col.id];
+      if (!cell?.st) continue;
+      const rest: CellStyle = { ...cell.st };
+      for (const k of Object.keys(common) as (keyof CellStyle)[]) if (JSON.stringify(rest[k]) === JSON.stringify(common[k])) delete rest[k];
+      if (Object.keys(rest).length) cell.st = rest;
+      else delete cell.st;
+      if (isEmptyCell(cell)) delete row.cells[col.id];
+    }
+  }
+}
+
+type ExcelImage = ReturnType<ExcelJS.Worksheet['getImages']>[number];
+
+/** Байты картинки из книги Excel. */
+function imageBytes(wb: ExcelJS.Workbook, img: ExcelImage): { bytes: Uint8Array; ext: string } | null {
+  const media = wb.getImage(Number(img.imageId)) as unknown as { buffer?: ArrayBuffer | Uint8Array; base64?: string; extension?: string } | undefined;
+  if (!media) return null;
+  let bytes: Uint8Array | null = null;
+  if (media.buffer) bytes = media.buffer instanceof Uint8Array ? media.buffer : new Uint8Array(media.buffer);
+  else if (media.base64) bytes = Uint8Array.from(atob(media.base64.replace(/^data:[^,]+,/, '')), (ch) => ch.charCodeAt(0));
+  return bytes ? { bytes, ext: (media.extension ?? 'png').toLowerCase() } : null;
+}
+
+/** Лист «Карточки» нашей выгрузки: блоки карточек по листу и номеру строки. */
+async function readCards(wb: ExcelJS.Workbook, ws: ExcelJS.Worksheet, opts: ImportOptions, warnings: string[]): Promise<Map<string, CardBlock[]>> {
+  const out = new Map<string, CardBlock[]>();
+  const imgAt = new Map<number, ExcelImage>();
+  for (const img of ws.getImages()) {
+    const tl = (img.range as unknown as { tl: Anchor }).tl;
+    imgAt.set(Math.floor(tl.nativeRow ?? tl.row) + 1, img);
+  }
+  const jobs: { block: CardBlock; img: ExcelImage; r: number }[] = [];
+  for (let r = 2; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r);
+    const sheetName = richToText(row.getCell(1).value).trim();
+    const rowNo = Number(scalarOf(row.getCell(2).value));
+    const blockNo = Number(scalarOf(row.getCell(4).value));
+    if (!sheetName || !(rowNo >= 1) || !(blockNo >= 1) || blockNo > 300) continue;
+    const block: CardBlock = {};
+    const text = richToText(row.getCell(6).value);
+    if (text) block.text = text;
+    const cs = Number(scalarOf(row.getCell(7).value));
+    const rs = Number(scalarOf(row.getCell(8).value));
+    if (cs >= 2 && cs <= 3) block.cs = cs;
+    if (rs >= 2 && rs <= 3) block.rs = rs;
+    const st = richToText(row.getCell(9).value).trim();
+    if (st) {
+      try {
+        block.st = JSON.parse(st) as CellStyle;
+      } catch {
+        /* оформление повреждено — оставляем блок без него */
+      }
+    }
+    const img = imgAt.get(r);
+    if (img) jobs.push({ block, img, r });
+    const key = sheetName + '\n' + rowNo;
+    const list = out.get(key) ?? [];
+    list[blockNo - 1] = block;
+    out.set(key, list);
+  }
+  let done = 0;
+  await pool(jobs, 4, async ({ block, img, r }) => {
+    const b = imageBytes(wb, img);
+    if (b) {
+      try {
+        block.img = await importImage(new Blob([b.bytes as BlobPart], { type: `image/${b.ext === 'jpg' ? 'jpeg' : b.ext}` }), `карточка-${r}.${b.ext}`);
+      } catch {
+        warnings.push(`Не удалось прочитать фото карточки в строке ${r} листа «${ws.name}»`);
+      }
+    }
+    done++;
+    if (done % 10 === 0 || done === jobs.length) opts.onProgress?.(`Карточки: фото ${done} из ${jobs.length}`);
+  });
+  // пропуски между блоками — пустые клетки
+  for (const list of out.values()) for (let i = 0; i < list.length; i++) list[i] ??= {};
   return out;
 }
 
@@ -162,8 +279,25 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
   let imageCount = 0;
   let rowsTotal = 0;
 
+  // служебные листы выгрузки «Реестра»: параметры (курс, доставка) и карточки товаров — не листы базы
+  const isService = (ws: ExcelJS.Worksheet, name: string, head: string[]) =>
+    ws.name === name && head.every((h, i) => richToText(ws.getRow(1).getCell(i + 1).value).trim() === h);
+  const paramsWs = wb.worksheets.find((ws) => isService(ws, PARAMS_SHEET, PARAMS_HEAD));
+  const cardsWs = wb.worksheets.find((ws) => isService(ws, CARDS_SHEET, CARDS_HEAD));
+  if (paramsWs) {
+    for (let r = 2; r <= paramsWs.rowCount; r++) {
+      const row = paramsWs.getRow(r);
+      const name = richToText(row.getCell(1).value).trim();
+      const value = scalarOf(row.getCell(2).value);
+      if (!name || value === null || usedNames.has(name)) continue;
+      usedNames.add(name);
+      names.push({ name, value, note: richToText(row.getCell(3).value).trim() || undefined });
+    }
+  }
+  const cards = cardsWs ? await readCards(wb, cardsWs, opts, warnings) : new Map<string, CardBlock[]>();
+
   for (const ws of wb.worksheets) {
-    if (ws.state === 'veryHidden') continue;
+    if (ws.state === 'veryHidden' || ws === paramsWs || ws === cardsWs) continue;
     const images = ws.getImages();
     let hasValues = false;
     ws.eachRow((row) => {
@@ -262,10 +396,14 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
       const id = uid(8);
       const cells: Record<string, Cell> = {};
       for (let c = 1; c <= columns.length; c++) {
-        const cell = cellFromExcel(xr.getCell(c), convert);
+        const xc = xr.getCell(c);
+        if (xc.isMerged && xc.master && xc.master.address !== xc.address) continue;
+        const cell = cellFromExcel(xc, convert);
         if (cell) cells[columns[c - 1].id] = cell;
       }
       const row: Row = { id, cells };
+      const card = cards.get(ws.name + '\n' + (r - hr));
+      if (card) row.card = card;
       if (xr.height) row.h = Math.round(Math.max(20, Math.min(600, (xr.height * 4) / 3)));
       if (xr.hidden) row.hidden = true;
       rows.set(id, row);
@@ -275,7 +413,7 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
     while (order.length > 1) {
       const last = rows.get(order[order.length - 1])!;
       const idx = order.length - 1 + hr;
-      if (imageRows.has(idx) || Object.values(last.cells).some((c) => c.v !== undefined || c.f || c.note)) break;
+      if (imageRows.has(idx) || last.card?.length || Object.values(last.cells).some((c) => c.v !== undefined || c.f || c.note)) break;
       rows.delete(order.pop()!);
     }
     if (!order.length) {
@@ -307,6 +445,8 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
         if (cell?.f) delete cell.f;
       }
     }
+
+    promoteColumnStyles(columns, rows, order);
 
     // фото: первое в ячейке — в ячейку, остальные из той же ячейки — в карточку товара
     const jobs = images
@@ -396,5 +536,6 @@ export async function importXlsx(file: File, opts: ImportOptions): Promise<Impor
     });
   }
   if (!sheets.length) throw new Error('В файле нет данных');
-  return { sheets, images: imageCount, rows: rowsTotal, warnings, names };
+  const title = wb.creator === 'Реестр' && wb.title ? wb.title.trim().slice(0, 80) : undefined;
+  return { sheets, images: imageCount, rows: rowsTotal, warnings, names, title };
 }

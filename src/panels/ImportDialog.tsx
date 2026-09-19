@@ -50,7 +50,7 @@ export function ImportDialog({ initialFile }: { initialFile?: File | null }) {
       if (mode === 'replace') {
         const meta = {
           ...store.meta,
-          title: file.name.replace(/\.[^.]+$/, '').slice(0, 80) || store.meta.title,
+          title: res.title || file.name.replace(/\.[^.]+$/, '').slice(0, 80) || store.meta.title,
           sheetIds: res.sheets.map((s) => s.id),
           activeSheet: res.sheets[0].id,
           names: res.names.length ? res.names : store.meta.demo ? [] : store.meta.names,
